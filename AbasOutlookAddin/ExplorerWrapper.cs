@@ -105,6 +105,35 @@ namespace AbasOutlookAddin
         [DllImport("kernel32.dll")]
         private static extern uint GetCurrentThreadId();
 
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
+        private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
+
+        // POSITIVLISTE: ABAS-Drag wird AUSSCHLIESSLICH gestartet, wenn der Klick in der
+        // Outlook-Nachrichtenliste (die Übersicht mit "Heute/Gestern/Letzte Woche ...")
+        // beginnt. Deren Fensterklasse ist "SUPERGRID". Ein Klick im Schreib-/Lesebereich,
+        // im Ordnerbaum o. ä. startet damit KEINEN Drag.
+        private static readonly string[] MessageListClasses =
+        {
+            "SUPERGRID"        // klassische Outlook-Nachrichtenliste (Tabellenansicht)
+        };
+
+        private static bool IsMessageList(IntPtr hwnd)
+        {
+            string cls = GetWindowClass(hwnd);
+            foreach (var allowed in MessageListClasses)
+                if (string.Equals(cls, allowed, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            return false;
+        }
+
+        private static string GetWindowClass(IntPtr hwnd)
+        {
+            if (hwnd == IntPtr.Zero) return string.Empty;
+            var sb = new System.Text.StringBuilder(256);
+            int n = GetClassName(hwnd, sb, sb.Capacity);
+            return n > 0 ? sb.ToString() : string.Empty;
+        }
+
         private readonly Explorer _explorer;
         private readonly DragDropHandler _handler;
         private readonly HookProc _proc;   // Feld -> verhindert GC des Delegates
@@ -112,6 +141,7 @@ namespace AbasOutlookAddin
 
         private bool _mouseDown;
         private POINT _downPoint;
+        private IntPtr _downHwnd;      // Fenster, über dem die Maustaste gedrückt wurde
         private bool _dragInProgress; // Reentrancy-Schutz (#6)
         private bool _disposed;
 
@@ -144,13 +174,23 @@ namespace AbasOutlookAddin
                         case WM_LBUTTONDOWN:
                             _mouseDown = true;
                             _downPoint = hs.pt;
+                            _downHwnd = hs.hwnd;   // Fenster unter dem Cursor merken
                             break;
 
                         case WM_MOUSEMOVE:
                             if (_mouseDown && HasMovedEnough(hs.pt))
                             {
                                 _mouseDown = false;
-                                InitiateDrag();
+
+                                // Drag NUR aus der Nachrichtenliste (SUPERGRID) starten.
+                                if (IsMessageList(_downHwnd))
+                                {
+                                    InitiateDrag();
+                                }
+                                else
+                                {
+                                    Logger.Log($"Drag ignoriert (kein Listen-Fenster, Klasse='{GetWindowClass(_downHwnd)}').");
+                                }
                             }
                             break;
 

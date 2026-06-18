@@ -196,16 +196,25 @@ Schutzmaßnahmen:
 
 ## Deinstallation
 
+### Empfohlen: Skript (macht die Setup.exe-Installation rückgängig)
+`Setup\iexpress_stage\uninstall_colleague.bat` per **Rechtsklick → Als Administrator
+ausführen** (fordert UAC sonst selbst an). Es schließt Outlook, hebt die COM-Registrierung
+auf, entfernt die `HKLM`-Einträge und löscht den Programmordner sowie die
+benutzerspezifischen Temp-/Log-Daten.
+
+### Manuell (als Administrator)
 ```cmd
 :: COM-Registrierung entfernen
 "%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe" ^
-    "C:\Program Files\AbasOutlookAddin\AbasOutlookAddin.dll" /unregister
+    "%ProgramFiles%\ABAS Outlook Addin\AbasOutlookAddin.dll" /unregister
 
-:: Outlook-Eintrag entfernen
-reg delete "HKCU\Software\Microsoft\Office\Outlook\Addins\AbasOutlookAddin.Connect" /f
+:: Outlook-Einträge entfernen (HKLM, da Setup für alle Benutzer installiert)
+reg delete "HKLM\SOFTWARE\Microsoft\Office\Outlook\Addins\AbasOutlookAddin.Connect" /f
+reg delete "HKLM\SOFTWARE\Microsoft\Office\16.0\Outlook\Resiliency\DoNotDisableAddinList" /v "AbasOutlookAddin.Connect" /f
 
 :: Dateien löschen
-rmdir /s /q "C:\Program Files\AbasOutlookAddin"
+rmdir /s /q "%ProgramFiles%\ABAS Outlook Addin"
+rmdir /s /q "%LOCALAPPDATA%\AbasOutlookAddin"
 ```
 
 ---
