@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Deutsche Lokalisierung für WiX Bootstrapper und MSI-UI
+  Datei: de-DE.wxl
+-->
+<WixLocalization Culture="de-DE" Codepage="1252"
+                 xmlns="http://schemas.microsoft.com/wix/2006/localization">
+
+  <String Id="Caption">ABAS Outlook Drag &amp; Drop Add-in</String>
+  <String Id="Title">ABAS Outlook Drag &amp; Drop Add-in</String>
+
+  <!-- Bootstrapper Texte -->
+  <String Id="InstallHeader">Willkommen</String>
+  <String Id="InstallMessage">
+    Dieses Setup installiert das ABAS Outlook Drag &amp; Drop Add-in auf Ihrem Computer.
+    Das Add-in ermöglicht es, E-Mails und Anhänge direkt aus Outlook in den ABAS Windows-Client zu ziehen.
+  </String>
+
+  <String Id="InstallVersion">Version 1.0.0</String>
+  <String Id="InstallLicense">Lizenzvereinbarung</String>
+  <String Id="InstallLicenseAccept">Ich akzeptiere die Bedingungen der Lizenzvereinbarung</String>
+  <String Id="InstallLicenseDecline">Ich akzeptiere die Bedingungen der Lizenzvereinbarung nicht</String>
+
+  <String Id="OptionsHeader">Installationsordner</String>
+  <String Id="OptionsLocationLabel">Installieren in:</String>
+  <String Id="BrowseButton">Durchsuchen...</String>
+
+  <String Id="InstallButton">Installieren</String>
+  <String Id="UpdateButton">Aktualisieren</String>
+  <String Id="RepairButton">Reparieren</String>
+  <String Id="UninstallButton">Deinstallieren</String>
+  <String Id="CancelButton">Abbrechen</String>
+  <String Id="CloseButton">Schließen</String>
+  <String Id="BackButton">Zurück</String>
+
+  <String Id="ProgressHeader">Installation wird durchgeführt</String>
+  <String Id="ProgressLabel">Status:</String>
+  <String Id="OverallProgressPackageHeader">Verarbeite:</String>
+
+  <String Id="SuccessHeader">Installation abgeschlossen</String>
+  <String Id="SuccessMessage">
+    Das ABAS Outlook Add-in wurde erfolgreich installiert.
+    Bitte starten Sie Outlook neu, damit das Add-in aktiv wird.
+  </String>
+
+  <String Id="FailureHeader">Installation fehlgeschlagen</String>
+  <String Id="FailureMessage">
+    Bei der Installation ist ein Fehler aufgetreten.
+    Bitte wenden Sie sich an Ihren IT-Administrator.
+    Fehlercode: [ErrorCode]
+  </String>
+
+  <String Id="CloseOutlookWarning">
+    Outlook ist geöffnet und wird für die Installation kurz geschlossen.
+    Bitte speichern Sie Ihre Arbeit, bevor Sie fortfahren.
+  </String>
+
+  <!-- Voraussetzungen -->
+  <String Id="NetFxPackageGroupCaption">.NET Framework 4.7.2</String>
+
+</WixLocalization>

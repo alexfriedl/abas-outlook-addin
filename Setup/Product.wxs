@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ABAS Outlook Drag & Drop Add-in – WiX Installer
+  Erfordert: WiX Toolset v3.11 (https://wixtoolset.org)
+
+  Build-Befehle:
+    candle.exe Product.wxs -out Product.wixobj
+    light.exe Product.wixobj -ext WixUIExtension -ext WixUtilExtension -out AbasOutlookAddin.msi
+
+  Silent-Install (GPO/SCCM):
+    msiexec.exe /i AbasOutlookAddin.msi /qn /log install.log
+
+  Silent-Deinstall:
+    msiexec.exe /x {11223344-5566-7788-AABB-CCDDEEFF0011} /qn
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:util="http://schemas.microsoft.com/wix/UtilExtension">
+
+  <Product Id="{11223344-5566-7788-AABB-CCDDEEFF0011}"
+           Name="ABAS Outlook Drag &amp; Drop Add-in"
+           Language="1031"
+           Version="1.0.0.0"
+           Manufacturer="Ihr Unternehmen GmbH"
+           UpgradeCode="{AABBCCDD-EEFF-0011-2233-445566778899}">
+
+    <Package InstallerVersion="400"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Description="ABAS Outlook Drag &amp; Drop Add-in"
+             Comments="Ermöglicht Drag &amp; Drop von Outlook in den ABAS Windows-Client"
+             Manufacturer="Ihr Unternehmen GmbH" />
+
+    <!-- Upgrade-Logik: Alte Version automatisch ersetzen -->
+    <MajorUpgrade DowngradeErrorMessage="Eine neuere Version ist bereits installiert." />
+
+    <!-- Eingebettetes CAB-Archiv -->
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- UI-Sprache Deutsch -->
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+
+    <!-- ===== Feature-Baum ===== -->
+    <Feature Id="ProductFeature" Title="ABAS Outlook Add-in" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+      <ComponentGroupRef Id="RegistryComponents" />
+    </Feature>
+
+    <!-- ===== UI ===== -->
+    <UIRef Id="WixUI_InstallDir" />
+
+    <!-- ===== Aktionen nach Installation ===== -->
+    <!-- RegAsm aufrufen um COM zu registrieren -->
+    <CustomAction Id="RegisterCOM"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe &quot;[INSTALLFOLDER]AbasOutlookAddin.dll&quot; /codebase /nologo"
+                  Execute="deferred"
+                  Return="check"
+                  Impersonate="no" />
+
+    <!-- RegAsm /unregister beim Deinstallieren -->
+    <CustomAction Id="UnregisterCOM"
+                  Directory="INSTALLFOLDER"
+                  ExeCommand="[SystemFolder]Microsoft.NET\Framework64\v4.0.30319\RegAsm.exe &quot;[INSTALLFOLDER]AbasOutlookAddin.dll&quot; /unregister /nologo"
+                  Execute="deferred"
+                  Return="ignore"
+                  Impersonate="no" />
+
+    <!-- Outlook beenden falls offen (sanft) -->
+    <util:CloseApplication Id="CloseOutlook"
+                           Target="OUTLOOK.EXE"
+                           Description="Outlook wird für die Installation kurz geschlossen."
+                           CloseMessage="yes"
+                           RebootPrompt="no"
+                           TerminateProcess="5000" />
+
+    <InstallExecuteSequence>
+      <Custom Action="RegisterCOM" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="UnregisterCOM" Before="RemoveFiles">Installed AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+
+  </Product>
+
+  <!-- ===== Verzeichnisstruktur ===== -->
+  <Fragment>
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="ManufacturerFolder" Name="Ihr Unternehmen">
+          <Directory Id="INSTALLFOLDER" Name="ABAS Outlook Addin" />
+        </Directory>
+      </Directory>
+      <!-- Log-Verzeichnis wird vom Add-in selbst erstellt, kein MSI-Eintrag nötig -->
+    </Directory>
+  </Fragment>
+
+  <!-- ===== Dateien ===== -->
+  <Fragment>
+    <ComponentGroup Id="ProductComponents" Directory="INSTALLFOLDER">
+
+      <!-- Haupt-DLL -->
+      <Component Id="MainDll" Guid="{22334455-6677-8899-AABB-CCDDEEFF1122}">
+        <File Id="AbasOutlookAddinDll"
+              Source="..\AbasOutlookAddin\bin\Release\AbasOutlookAddin.dll"
+              KeyPath="yes" />
+      </Component>
+
+      <!-- Debug-Symbole (optional, für Fehleranalyse) -->
+      <Component Id="DebugSymbols" Guid="{33445566-7788-99AA-BBCC-DDEEFF223344}">
+        <File Id="AbasOutlookAddinPdb"
+              Source="..\AbasOutlookAddin\bin\Release\AbasOutlookAddin.pdb"
+              KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+  </Fragment>
+
+  <!-- ===== Registry-Einträge ===== -->
+  <Fragment>
+    <ComponentGroup Id="RegistryComponents" Directory="INSTALLFOLDER">
+
+      <!--
+        Outlook Add-in Registrierung unter HKLM → gilt für alle Benutzer
+        LoadBehavior 3 = Beim Start laden
+      -->
+      <Component Id="OutlookAddinRegistry"
+                 Guid="{44556677-8899-AABB-CCDD-EEFF00334455}">
+
+        <RegistryKey Root="HKLM"
+                     Key="SOFTWARE\Microsoft\Office\Outlook\Addins\AbasOutlookAddin.Connect">
+          <RegistryValue Type="string"
+                         Name="Description"
+                         Value="ABAS Outlook Drag &amp; Drop Add-in" />
+          <RegistryValue Type="string"
+                         Name="FriendlyName"
+                         Value="ABAS Drag &amp; Drop" />
+          <RegistryValue Type="integer"
+                         Name="LoadBehavior"
+                         Value="3"
+                         KeyPath="yes" />
+        </RegistryKey>
+
+        <!--
+          Gleicher Eintrag für 32-Bit Office auf 64-Bit Windows (Wow6432Node)
+          Nur nötig wenn 32-Bit Outlook im Einsatz ist
+        -->
+        <RegistryKey Root="HKLM"
+                     Key="SOFTWARE\Wow6432Node\Microsoft\Office\Outlook\Addins\AbasOutlookAddin.Connect">
+          <RegistryValue Type="string"
+                         Name="Description"
+                         Value="ABAS Outlook Drag &amp; Drop Add-in" />
+          <RegistryValue Type="string"
+                         Name="FriendlyName"
+                         Value="ABAS Drag &amp; Drop" />
+          <RegistryValue Type="integer"
+                         Name="LoadBehavior"
+                         Value="3" />
+        </RegistryKey>
+
+        <!--
+          Resilienz: Verhindert dass Outlook das Add-in bei einem Fehler deaktiviert.
+          DoNotDisableAddinList = Add-in bleibt aktiv auch nach Crashes
+        -->
+        <RegistryKey Root="HKLM"
+                     Key="SOFTWARE\Microsoft\Office\16.0\Outlook\Resiliency\DoNotDisableAddinList">
+          <RegistryValue Type="integer"
+                         Name="AbasOutlookAddin.Connect"
+                         Value="1" />
+        </RegistryKey>
+
+      </Component>
+
+    </ComponentGroup>
+  </Fragment>
+
+</Wix>

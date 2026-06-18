@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX Burn Bootstrapper – Bundle
+  Prüft .NET Framework 4.7.2 Voraussetzung und installiert es bei Bedarf
+  vor dem eigentlichen MSI.
+
+  Build:
+    candle.exe Bundle.wxs -ext WixBalExtension -ext WixNetFxExtension -out Bundle.wixobj
+    light.exe Bundle.wixobj -ext WixBalExtension -ext WixNetFxExtension -out AbasOutlookAddinSetup.exe
+
+  Silent:
+    AbasOutlookAddinSetup.exe /quiet /norestart
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi"
+     xmlns:bal="http://schemas.microsoft.com/wix/BalExtension"
+     xmlns:netfx="http://schemas.microsoft.com/wix/NetFxExtension">
+
+  <Bundle Name="ABAS Outlook Drag &amp; Drop Add-in"
+          Version="1.0.0.0"
+          Manufacturer="Ihr Unternehmen GmbH"
+          UpgradeCode="{BBCCDDEE-FF00-1122-3344-556677889900}"
+          IconSourceFile="abas_addin.ico">
+
+    <BootstrapperApplicationRef Id="WixStandardBootstrapperApplication.RtfLicense">
+      <bal:WixStandardBootstrapperApplication
+          LicenseFile="License.rtf"
+          LogoFile="logo.png"
+          ThemeFile="HyperlinkTheme.xml"
+          LocalizationFile="de-DE.wxl" />
+    </BootstrapperApplicationRef>
+
+    <Chain>
+      <!-- Voraussetzung: .NET Framework 4.7.2 -->
+      <PackageGroupRef Id="NetFx472Web" />
+
+      <!-- Haupt-MSI -->
+      <MsiPackage Id="AbasOutlookAddinMsi"
+                  SourceFile="AbasOutlookAddin.msi"
+                  DisplayInternalUI="no"
+                  Vital="yes">
+        <MsiProperty Name="ALLUSERS" Value="1" />
+      </MsiPackage>
+    </Chain>
+
+  </Bundle>
+
+</Wix>

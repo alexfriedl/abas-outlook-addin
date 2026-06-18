@@ -1,0 +1,37 @@
+Windows Registry Editor Version 5.00
+
+; ============================================================
+; ABAS Outlook Drag & Drop Add-in – COM Registrierung
+; Ausführen als Administrator nach dem Build
+; ============================================================
+
+; COM-Klasse registrieren
+[HKEY_CLASSES_ROOT\AbasOutlookAddin.Connect]
+@="ABAS Outlook Drag & Drop Add-in"
+
+[HKEY_CLASSES_ROOT\AbasOutlookAddin.Connect\CLSID]
+@="{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}"
+
+[HKEY_CLASSES_ROOT\CLSID\{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}]
+@="ABAS Outlook Drag & Drop Add-in"
+
+[HKEY_CLASSES_ROOT\CLSID\{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}\InprocServer32]
+@="mscoree.dll"
+"ThreadingModel"="Both"
+"Class"="AbasOutlookAddin.Connect"
+"Assembly"="AbasOutlookAddin, Version=1.0.0.0, Culture=neutral, PublicKeyToken=<IHR_PUBLIC_KEY_TOKEN>"
+"RuntimeVersion"="v4.0.30319"
+"CodeBase"="file:///C:/Program Files/AbasOutlookAddin/AbasOutlookAddin.dll"
+
+[HKEY_CLASSES_ROOT\CLSID\{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}\ProgId]
+@="AbasOutlookAddin.Connect"
+
+; Outlook Add-in Registrierung (HKCU – kein Admin nötig für Einzelbenutzer)
+[HKEY_CURRENT_USER\Software\Microsoft\Office\Outlook\Addins\AbasOutlookAddin.Connect]
+"Description"="ABAS Outlook Drag & Drop Add-in"
+"FriendlyName"="ABAS Drag & Drop"
+"LoadBehavior"=dword:00000003
+"Manifest"="C:\\Program Files\\AbasOutlookAddin\\AbasOutlookAddin.vsto|vstolocal"
+
+; Für Massenrollout via GPO: HKLM statt HKCU verwenden
+; [HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Office\Outlook\Addins\AbasOutlookAddin.Connect]
