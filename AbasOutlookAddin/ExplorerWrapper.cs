@@ -114,7 +114,8 @@ namespace AbasOutlookAddin
         // im Ordnerbaum o. ä. startet damit KEINEN Drag.
         private static readonly string[] MessageListClasses =
         {
-            "SUPERGRID"        // klassische Outlook-Nachrichtenliste (Tabellenansicht)
+            "OutlookGrid",     // Nachrichtenliste in neueren Outlook-Versionen (M365)
+            "SUPERGRID"        // Nachrichtenliste in älteren Outlook-Versionen
         };
 
         private static bool IsMessageList(IntPtr hwnd)
