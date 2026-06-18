@@ -6,6 +6,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Windows.Forms;
 using Microsoft.Office.Interop.Outlook;
+using Application = Microsoft.Office.Interop.Outlook.Application;
 
 namespace AbasOutlookAddin
 {
@@ -183,7 +184,7 @@ namespace AbasOutlookAddin
             {
                 fileName = SanitizeFileName(appointment.Subject) + ".ics";
                 tempPath = GetUniquePath(_tempDir, fileName);
-                appointment.SaveAs(tempPath, OlSaveAsType.olICalendar);
+                appointment.SaveAs(tempPath, OlSaveAsType.olICal);
             }
             else if (item is TaskItem task)
             {

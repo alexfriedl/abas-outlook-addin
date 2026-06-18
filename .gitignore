@@ -1,0 +1,20 @@
+# Build-Ausgabe
+[Bb]in/
+[Oo]bj/
+Setup/out/
+
+# Strong-Name-Key: jeder Entwickler erzeugt seinen eigenen (sn.exe -k ...)
+*.snk
+
+# Build-Artefakte im Installer-Staging (DLL wird beim Build hineinkopiert)
+Setup/iexpress_stage/*.dll
+Test/*.exe
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Installer-/Setup-Logs
+Installer/*_log.txt
+Setup/*.log

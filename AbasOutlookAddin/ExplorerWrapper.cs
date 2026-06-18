@@ -1,17 +1,35 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Microsoft.Office.Interop.Outlook;
 
 namespace AbasOutlookAddin
 {
     /// <summary>
-    /// Kapselt einen Outlook Explorer und reagiert auf Maus-Events
-    /// um den Drag & Drop Prozess zu starten.
+    /// COM-Standardinterface zum Ermitteln des Fensterhandles eines
+    /// Office-Fensters. Das Outlook-Explorer-Objekt besitzt keine
+    /// HWND-Eigenschaft, implementiert aber IOleWindow.
     /// </summary>
-    public class ExplorerWrapper
+    [ComImport]
+    [Guid("00000114-0000-0000-C000-000000000046")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IOleWindow
+    {
+        void GetWindow(out IntPtr phwnd);
+        void ContextSensitiveHelp([MarshalAs(UnmanagedType.Bool)] bool fEnterMode);
+    }
+
+    /// <summary>
+    /// Kapselt einen Outlook Explorer und installiert die Maus-Überwachung,
+    /// um einen Drag &amp; Drop in den ABAS-Client zu starten.
+    /// </summary>
+    public class ExplorerWrapper : IDisposable
     {
         private readonly Explorer _explorer;
         private readonly DragDropHandler _handler;
+
+        // Referenz halten, damit GC den Hook (und sein Delegate) nicht abräumt.
+        private MouseDragWatcher _watcher;
 
         public ExplorerWrapper(Explorer explorer, DragDropHandler handler)
         {
@@ -21,88 +39,135 @@ namespace AbasOutlookAddin
 
         public void Attach()
         {
-            // Wir nutzen einen Low-Level-Hook auf das Explorer-Fenster
-            // via NativeWindow Subclassing – kein API-Hooking auf Systemebene
             try
             {
-                IntPtr hwnd = (IntPtr)_explorer.CurrentFolder.GetType()
-                    .InvokeMember("HWND", System.Reflection.BindingFlags.GetProperty, null, _explorer, null);
+                IntPtr hwnd = IntPtr.Zero;
+                if (_explorer is IOleWindow oleWindow)
+                    oleWindow.GetWindow(out hwnd);
 
-                var nativeHandler = new OutlookNativeWindow(hwnd, _explorer, _handler);
-                nativeHandler.AssignHandle(hwnd);
+                _watcher = new MouseDragWatcher(_explorer, _handler);
+                _watcher.Install();
 
-                Logger.Log($"Explorer-Fenster ueberwacht: {hwnd}");
+                Logger.Log($"Maus-Ueberwachung installiert (Explorer-HWND {hwnd}).");
             }
             catch (System.Exception ex)
             {
-                Logger.LogError("Explorer-Attach fehlgeschlagen, nutze Event-Fallback", ex);
-                // Fallback: Nutze Outlook Selection-Change Event als Trigger
-                AttachSelectionEvents();
+                Logger.LogError("Maus-Ueberwachung konnte nicht installiert werden", ex);
             }
         }
 
-        private void AttachSelectionEvents()
+        public void Dispose()
         {
-            _explorer.SelectionChange += Explorer_SelectionChange;
-        }
-
-        private void Explorer_SelectionChange()
-        {
-            Logger.Log($"Selektion geaendert: {_explorer.Selection?.Count} Element(e)");
+            _watcher?.Dispose();
+            _watcher = null;
         }
     }
 
     /// <summary>
-    /// Windows Message Subclassing für das Outlook Explorer Fenster.
-    /// Fängt WM_MOUSEMOVE ab um den Drag zu erkennen – ohne globales Hooking.
+    /// Erkennt einen Maus-Drag über einen THREAD-LOKALEN WH_MOUSE-Hook auf
+    /// Outlooks UI-Thread. Kein globaler System-Hook, keine DLL-Injection –
+    /// der Hook gilt ausschließlich für den aktuellen (Outlook-)Thread und
+    /// sieht damit auch die Maus-Events der Kind-Fenster (z. B. der E-Mail-Liste),
+    /// ohne dass Fensterklassen fest verdrahtet werden müssen.
     /// </summary>
-    internal class OutlookNativeWindow : NativeWindow, IDisposable
+    internal class MouseDragWatcher : IDisposable
     {
+        private const int WH_MOUSE = 7;
+        private const int HC_ACTION = 0;
         private const int WM_LBUTTONDOWN = 0x0201;
         private const int WM_MOUSEMOVE = 0x0200;
         private const int WM_LBUTTONUP = 0x0202;
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT { public int x; public int y; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MOUSEHOOKSTRUCT
+        {
+            public POINT pt;
+            public IntPtr hwnd;
+            public uint wHitTestCode;
+            public IntPtr dwExtraInfo;
+        }
+
+        private delegate IntPtr HookProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(int idHook, HookProc lpfn, IntPtr hMod, uint dwThreadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentThreadId();
+
         private readonly Explorer _explorer;
         private readonly DragDropHandler _handler;
+        private readonly HookProc _proc;   // Feld -> verhindert GC des Delegates
+        private IntPtr _hookId = IntPtr.Zero;
+
         private bool _mouseDown;
-        private System.Drawing.Point _mouseDownPoint;
+        private POINT _downPoint;
+        private bool _dragInProgress; // Reentrancy-Schutz (#6)
         private bool _disposed;
 
-        // Verhindert Reentrancy während eines Drags (#6)
-        private bool _dragInProgress;
-
-        public OutlookNativeWindow(IntPtr hwnd, Explorer explorer, DragDropHandler handler)
+        public MouseDragWatcher(Explorer explorer, DragDropHandler handler)
         {
             _explorer = explorer;
             _handler = handler;
+            _proc = HookCallback;
         }
 
-        protected override void WndProc(ref Message m)
+        public void Install()
         {
-            switch (m.Msg)
+            // Thread-lokaler Hook: hMod = 0, dwThreadId = aktueller (Outlook-)Thread.
+            _hookId = SetWindowsHookEx(WH_MOUSE, _proc, IntPtr.Zero, GetCurrentThreadId());
+            if (_hookId == IntPtr.Zero)
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),
+                    "SetWindowsHookEx (WH_MOUSE) fehlgeschlagen.");
+        }
+
+        private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode == HC_ACTION && !_dragInProgress)
             {
-                case WM_LBUTTONDOWN:
-                    if (!_dragInProgress)
+                int msg = wParam.ToInt32();
+                if (msg == WM_LBUTTONDOWN || msg == WM_MOUSEMOVE || msg == WM_LBUTTONUP)
+                {
+                    var hs = (MOUSEHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MOUSEHOOKSTRUCT));
+                    switch (msg)
                     {
-                        _mouseDown = true;
-                        _mouseDownPoint = GetPoint(m.LParam);
-                    }
-                    break;
+                        case WM_LBUTTONDOWN:
+                            _mouseDown = true;
+                            _downPoint = hs.pt;
+                            break;
 
-                case WM_MOUSEMOVE:
-                    if (_mouseDown && !_dragInProgress && HasMovedEnough(GetPoint(m.LParam)))
-                    {
-                        _mouseDown = false;
-                        InitiateDrag();
-                    }
-                    break;
+                        case WM_MOUSEMOVE:
+                            if (_mouseDown && HasMovedEnough(hs.pt))
+                            {
+                                _mouseDown = false;
+                                InitiateDrag();
+                            }
+                            break;
 
-                case WM_LBUTTONUP:
-                    _mouseDown = false;
-                    break;
+                        case WM_LBUTTONUP:
+                            _mouseDown = false;
+                            break;
+                    }
+                }
             }
 
-            base.WndProc(ref m);
+            return CallNextHookEx(_hookId, nCode, wParam, lParam);
+        }
+
+        private bool HasMovedEnough(POINT current)
+        {
+            return Math.Abs(current.x - _downPoint.x) > SystemInformation.DragSize.Width ||
+                   Math.Abs(current.y - _downPoint.y) > SystemInformation.DragSize.Height;
         }
 
         private void InitiateDrag()
@@ -112,14 +177,15 @@ namespace AbasOutlookAddin
 
             try
             {
-                var selection = _explorer.Selection;
+                Selection selection = null;
+                try { selection = _explorer.Selection; } catch { /* kein Explorer-Kontext */ }
                 if (selection == null || selection.Count == 0) return;
 
                 Logger.Log($"Drag gestartet mit {selection.Count} Element(e)");
 
-                DataObject dragData = null;
+                DataObject dragData;
 
-                // Prüfen ob einzelne E-Mail mit Anhängen selektiert
+                // Einzelne E-Mail mit Anhängen? -> Auswahl-Dialog.
                 if (selection.Count == 1 && selection[1] is MailItem mail && mail.Attachments.Count > 0)
                 {
                     var choice = ShowDragChoiceDialog(mail);
@@ -136,18 +202,19 @@ namespace AbasOutlookAddin
 
                 if (dragData == null) return;
 
-                // Standard OLE Drag & Drop starten – ABAS empfängt CF_HDROP
-                var result = System.Windows.Forms.DragDrop.DoDragDrop(dragData, DragDropEffects.Copy);
+                // Standard OLE Drag & Drop – Ziel (ABAS) empfängt echtes CF_HDROP.
+                DragDropEffects result;
+                using (var dragSource = new Control())
+                {
+                    result = dragSource.DoDragDrop(dragData, DragDropEffects.Copy);
+                }
 
                 Logger.Log($"Drag beendet, Ergebnis: {result}");
-
-                // IMMER Cleanup planen, auch bei Abbruch (#8)
                 _handler.ScheduleCleanup();
             }
             catch (System.Exception ex)
             {
                 Logger.LogError("Fehler beim Initiieren des Drags", ex);
-                // Auch bei Fehler aufräumen (#8)
                 _handler.ScheduleCleanup();
             }
             finally
@@ -158,7 +225,6 @@ namespace AbasOutlookAddin
 
         /// <summary>
         /// Auswahl-Dialog: E-Mail oder Anhänge?
-        /// Nutzt TopMost um Manipulation durch andere Prozesse zu erschweren (#6).
         /// </summary>
         private DragChoice ShowDragChoiceDialog(MailItem mail)
         {
@@ -169,13 +235,13 @@ namespace AbasOutlookAddin
                 dialog.StartPosition = FormStartPosition.CenterScreen;
                 dialog.MaximizeBox = false;
                 dialog.MinimizeBox = false;
-                dialog.TopMost = true; // Verhindert, dass andere Fenster darüber liegen (#6)
+                dialog.TopMost = true;
                 dialog.Size = new System.Drawing.Size(420, 200);
 
                 var label = new Label
                 {
                     Text = $"E-Mail: \"{TruncateForDisplay(mail.Subject, 50)}\"\n\n" +
-                           $"Was soll in ABAS abgelegt werden?",
+                           "Was soll in ABAS abgelegt werden?",
                     Location = new System.Drawing.Point(15, 15),
                     Size = new System.Drawing.Size(380, 60),
                     AutoSize = false
@@ -183,7 +249,7 @@ namespace AbasOutlookAddin
 
                 var btnEmail = new Button
                 {
-                    Text = $"E-Mail (.msg)",
+                    Text = "E-Mail (.msg)",
                     DialogResult = DialogResult.Yes,
                     Location = new System.Drawing.Point(15, 90),
                     Size = new System.Drawing.Size(120, 35)
@@ -227,25 +293,14 @@ namespace AbasOutlookAddin
             return input.Substring(0, maxLength) + "...";
         }
 
-        private static System.Drawing.Point GetPoint(IntPtr lParam)
-        {
-            int x = (int)(lParam.ToInt64() & 0xFFFF);
-            int y = (int)((lParam.ToInt64() >> 16) & 0xFFFF);
-            return new System.Drawing.Point(x, y);
-        }
-
-        private bool HasMovedEnough(System.Drawing.Point current)
-        {
-            return Math.Abs(current.X - _mouseDownPoint.X) > SystemInformation.DragSize.Width ||
-                   Math.Abs(current.Y - _mouseDownPoint.Y) > SystemInformation.DragSize.Height;
-        }
-
         public void Dispose()
         {
-            if (!_disposed)
+            if (_disposed) return;
+            _disposed = true;
+            if (_hookId != IntPtr.Zero)
             {
-                ReleaseHandle();
-                _disposed = true;
+                UnhookWindowsHookEx(_hookId);
+                _hookId = IntPtr.Zero;
             }
         }
     }

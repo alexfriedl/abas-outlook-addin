@@ -11,6 +11,7 @@
     <RootNamespace>AbasOutlookAddin</RootNamespace>
     <AssemblyName>AbasOutlookAddin</AssemblyName>
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <LangVersion>8.0</LangVersion>
     <RegisterForCOMInterop>true</RegisterForCOMInterop>
     <SignAssembly>true</SignAssembly>
     <AssemblyOriginatorKeyFile>AbasOutlookAddin.snk</AssemblyOriginatorKeyFile>
@@ -36,15 +37,20 @@
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Drawing" />
 
-    <!-- Outlook PIA – muss auf dem Build-Rechner installiert sein -->
-    <Reference Include="Microsoft.Office.Interop.Outlook">
-      <HintPath>$(ProgramFiles)\Microsoft Visual Studio\Shared\Visual Studio Tools for Office\PIA\Office15\Microsoft.Office.Interop.Outlook.dll</HintPath>
+    <!--
+      Outlook PIA und Extensibility werden portabel aus dem GAC aufgelöst
+      (keine maschinenspezifischen Pfade). Voraussetzung auf dem Build-Rechner:
+      Office-PIAs (z. B. via Visual Studio Workload "Office/SharePoint-Entwicklung")
+      und die Visual Studio Tools for Office Runtime.
+    -->
+    <Reference Include="Microsoft.Office.Interop.Outlook, Version=15.0.0.0, Culture=neutral, PublicKeyToken=71e9bce111e9429c, processorArchitecture=MSIL">
       <EmbedInteropTypes>true</EmbedInteropTypes>
+      <Private>false</Private>
     </Reference>
 
-    <Reference Include="Extensibility">
-      <HintPath>$(ProgramFiles)\Microsoft Visual Studio\Shared\Visual Studio Tools for Office\PIA\Common\Extensibility.dll</HintPath>
+    <Reference Include="Extensibility, Version=7.0.3300.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a, processorArchitecture=MSIL">
       <EmbedInteropTypes>true</EmbedInteropTypes>
+      <Private>false</Private>
     </Reference>
   </ItemGroup>
 

@@ -21,6 +21,10 @@ namespace AbasOutlookAddin
         private Explorer _activeExplorer;
         private DragDropHandler _dragDropHandler;
 
+        // Referenzen halten, damit GC die Fenster-Subclasses nicht abräumt.
+        private readonly System.Collections.Generic.List<ExplorerWrapper> _explorerWrappers
+            = new System.Collections.Generic.List<ExplorerWrapper>();
+
         public void OnConnection(object Application, ext_ConnectMode ConnectMode,
             object AddInInst, ref Array custom)
         {
@@ -100,12 +104,17 @@ namespace AbasOutlookAddin
         {
             var explorerWrapper = new ExplorerWrapper(explorer, _dragDropHandler);
             explorerWrapper.Attach();
+            _explorerWrappers.Add(explorerWrapper);
         }
 
         public void OnDisconnection(ext_DisconnectMode RemoveMode, ref Array custom)
         {
             try
             {
+                foreach (var w in _explorerWrappers)
+                    w.Dispose();
+                _explorerWrappers.Clear();
+
                 _dragDropHandler?.Dispose();
                 Logger.Log("ABAS Outlook Add-in entladen.");
             }
