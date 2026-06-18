@@ -1,5 +1,6 @@
 @echo off
 setlocal enableextensions
+set "STAGE=%TEMP%\AbasOutlookAddinUninstall"
 
 :: --- Adminrechte sicherstellen (sonst neu starten mit Elevation) ---
 net session >nul 2>&1
@@ -7,7 +8,10 @@ if %errorlevel%==0 goto :uninstall
 
 echo Diese Deinstallation benoetigt Administratorrechte.
 echo Es erscheint gleich eine Sicherheitsabfrage (UAC) - bitte mit "Ja" bestaetigen.
-powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+:: Kopie an festen Ort, da IExpress die entpackte .bat sofort wieder loescht.
+if not exist "%STAGE%" mkdir "%STAGE%"
+copy /Y "%~f0" "%STAGE%\uninstall_colleague.bat" >nul
+powershell -NoProfile -Command "Start-Process -FilePath '%STAGE%\uninstall_colleague.bat' -Verb RunAs"
 exit /b 0
 
 :uninstall
@@ -49,6 +53,7 @@ reg delete "HKCU\Software\Microsoft\Office\16.0\Outlook\Resiliency\DoNotDisableA
 echo [5/5] Programmdateien und Benutzerdaten loeschen...
 if exist "%INSTALL_DIR%" rd /s /q "%INSTALL_DIR%"
 if exist "%LOCALAPPDATA%\AbasOutlookAddin" rd /s /q "%LOCALAPPDATA%\AbasOutlookAddin"
+if exist "%STAGE%" rd /s /q "%STAGE%" 2>nul
 
 echo.
 echo ============================================
