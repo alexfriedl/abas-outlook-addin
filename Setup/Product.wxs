@@ -19,7 +19,7 @@
   <Product Id="{11223344-5566-7788-AABB-CCDDEEFF0011}"
            Name="ABAS Outlook Drag &amp; Drop Add-in"
            Language="1031"
-           Version="1.0.0.0"
+           Version="1.1.0.0"
            Manufacturer="Ihr Unternehmen GmbH"
            UpgradeCode="{AABBCCDD-EEFF-0011-2233-445566778899}">
 

@@ -1,10 +1,22 @@
 @echo off
 :: ============================================================
 :: ABAS Outlook Add-in – Build & Installations-Script
-:: Als Administrator ausführen!
+:: Fordert Administratorrechte bei Bedarf selbst an (UAC).
 :: ============================================================
 
+:: --- Selbst-Elevation: Adminrechte pruefen und ggf. neu starten ---
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo Administratorrechte erforderlich - fordere Berechtigung an...
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    exit /b
+)
+
 setlocal
+
+:: Immer im Skript-Verzeichnis arbeiten (wichtig bei "Als Administrator ausführen",
+:: da Windows sonst in C:\Windows\System32 startet und relative Pfade ins Leere zeigen).
+cd /d "%~dp0"
 
 set INSTALL_DIR=C:\Program Files\AbasOutlookAddin
 set DLL_PATH=%INSTALL_DIR%\AbasOutlookAddin.dll

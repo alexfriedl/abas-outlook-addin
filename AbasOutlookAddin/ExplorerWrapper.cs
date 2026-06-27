@@ -226,15 +226,11 @@ namespace AbasOutlookAddin
 
                 DataObject dragData;
 
-                // Einzelne E-Mail mit Anhängen? -> Auswahl-Dialog.
+                // Einzelne E-Mail mit Anhängen? -> Anhänge automatisch ablegen (ohne Dialog).
                 if (selection.Count == 1 && selection[1] is MailItem mail && mail.Attachments.Count > 0)
                 {
-                    var choice = ShowDragChoiceDialog(mail);
-                    if (choice == DragChoice.Cancel) return;
-
-                    dragData = choice == DragChoice.Attachments
-                        ? _handler.CreateDragDataFromAttachments(mail)
-                        : _handler.CreateDragData(selection);
+                    Logger.Log($"E-Mail mit {mail.Attachments.Count} Anhang/Anhaengen - lege Anhaenge automatisch ab");
+                    dragData = _handler.CreateDragDataFromAttachments(mail);
                 }
                 else
                 {
@@ -264,76 +260,6 @@ namespace AbasOutlookAddin
             }
         }
 
-        /// <summary>
-        /// Auswahl-Dialog: E-Mail oder Anhänge?
-        /// </summary>
-        private DragChoice ShowDragChoiceDialog(MailItem mail)
-        {
-            using (var dialog = new Form())
-            {
-                dialog.Text = "In ABAS ablegen";
-                dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
-                dialog.StartPosition = FormStartPosition.CenterScreen;
-                dialog.MaximizeBox = false;
-                dialog.MinimizeBox = false;
-                dialog.TopMost = true;
-                dialog.Size = new System.Drawing.Size(420, 200);
-
-                var label = new Label
-                {
-                    Text = $"E-Mail: \"{TruncateForDisplay(mail.Subject, 50)}\"\n\n" +
-                           "Was soll in ABAS abgelegt werden?",
-                    Location = new System.Drawing.Point(15, 15),
-                    Size = new System.Drawing.Size(380, 60),
-                    AutoSize = false
-                };
-
-                var btnEmail = new Button
-                {
-                    Text = "E-Mail (.msg)",
-                    DialogResult = DialogResult.Yes,
-                    Location = new System.Drawing.Point(15, 90),
-                    Size = new System.Drawing.Size(120, 35)
-                };
-
-                var btnAttachments = new Button
-                {
-                    Text = $"Anhänge ({mail.Attachments.Count})",
-                    DialogResult = DialogResult.No,
-                    Location = new System.Drawing.Point(145, 90),
-                    Size = new System.Drawing.Size(120, 35)
-                };
-
-                var btnCancel = new Button
-                {
-                    Text = "Abbrechen",
-                    DialogResult = DialogResult.Cancel,
-                    Location = new System.Drawing.Point(275, 90),
-                    Size = new System.Drawing.Size(120, 35)
-                };
-
-                dialog.Controls.AddRange(new Control[] { label, btnEmail, btnAttachments, btnCancel });
-                dialog.AcceptButton = btnEmail;
-                dialog.CancelButton = btnCancel;
-
-                var result = dialog.ShowDialog();
-
-                return result switch
-                {
-                    DialogResult.Yes => DragChoice.Email,
-                    DialogResult.No => DragChoice.Attachments,
-                    _ => DragChoice.Cancel
-                };
-            }
-        }
-
-        private static string TruncateForDisplay(string input, int maxLength)
-        {
-            if (string.IsNullOrEmpty(input)) return "(kein Betreff)";
-            if (input.Length <= maxLength) return input;
-            return input.Substring(0, maxLength) + "...";
-        }
-
         public void Dispose()
         {
             if (_disposed) return;
@@ -345,6 +271,4 @@ namespace AbasOutlookAddin
             }
         }
     }
-
-    internal enum DragChoice { Email, Attachments, Cancel }
 }
