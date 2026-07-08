@@ -194,11 +194,16 @@ Schutzmaßnahmen:
 
 ## Deinstallation
 
-### Empfohlen: Skript (macht die Setup.exe-Installation rückgängig)
-`Setup\iexpress_stage\uninstall_colleague.bat` per **Rechtsklick → Als Administrator
-ausführen** (fordert UAC sonst selbst an). Es schließt Outlook, hebt die COM-Registrierung
-auf, entfernt die `HKLM`-Einträge und löscht den Programmordner sowie die
-benutzerspezifischen Temp-/Log-Daten.
+### Empfohlen: `Uninstall.bat` aus dem Release-Paket
+Im Verteil-Paket (`Release\AbasOutlookAddin_Install.zip`) liegt neben `Install.bat`
+auch **`Uninstall.bat`**. Einfach **doppelklicken** (fordert UAC selbst an). Das Skript
+schließt Outlook und entfernt **alle** bekannten Installationen restlos – **beide**
+Programmpfade (mit/ohne Leerzeichen) und **beide** Registry-Hives (`HKCU` **und**
+`HKLM`). Damit werden auch Altlasten aus älteren Installer-Versionen (parallele 1.0.0/1.1.0-
+Installationen) sauber beseitigt. Anschließend Temp-/Log-Daten gelöscht.
+
+> **Update-Ablauf:** erst `Uninstall.bat`, dann `Install.bat` ausführen – so ist
+> garantiert nur die neue Version registriert und kein alter Eintrag bleibt aktiv.
 
 ### Manuell (als Administrator)
 ```cmd
