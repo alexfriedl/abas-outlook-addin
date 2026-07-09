@@ -131,8 +131,11 @@ msiexec.exe /i AbasOutlookAddin.msi /qn
 
 1. Outlook öffnen
 2. E-Mail oder Element in der Liste anklicken und **gedrückt halten**
-3. Bei E-Mails mit Anhängen werden **automatisch die Anhänge** abgelegt (kein Dialog).
-4. In das ABAS-Fenster ziehen und loslassen ✓
+3. Standardmäßig wird die E-Mail als **`.msg`** abgelegt (die Anhänge sind darin enthalten).
+4. Zum **zusätzlichen** Ablegen aller Anhänge als separate Dateien: beim Losziehen die
+   **Strg-Taste** gedrückt halten (passend zur Windows-Konvention „Strg+Ziehen = Kopieren").
+   Es wird dann `.msg` **+** alle Anhänge abgelegt.
+5. In das ABAS-Fenster ziehen und loslassen ✓
 
 > **Hinweis:** Das Add-in hat **keine sichtbare Oberfläche** (kein Menüband-Button, kein Symbol).
 > Es arbeitet unsichtbar im Hintergrund und reagiert nur auf das Ziehen mit der Maus.

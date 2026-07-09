@@ -226,11 +226,19 @@ namespace AbasOutlookAddin
 
                 DataObject dragData;
 
-                // Einzelne E-Mail mit Anhängen? -> Anhänge automatisch ablegen (ohne Dialog).
-                if (selection.Count == 1 && selection[1] is MailItem mail && mail.Attachments.Count > 0)
+                // Standard: nur die .msg ablegen (die Anhänge stecken darin ohnehin drin).
+                // Wird beim Losziehen die Strg-Taste (Ctrl) gehalten, wird eine einzelne
+                // E-Mail zusätzlich mit allen Anhängen als separate Dateien abgelegt.
+                // Strg passt zur Windows-Konvention "Strg+Ziehen = Kopieren" und deckt sich
+                // mit dem hier erlaubten Effekt (Copy), sodass der Drop auch dann sauber
+                // bleibt, wenn Strg während des gesamten Ziehens gehalten wird.
+                bool includeAttachments = (Control.ModifierKeys & Keys.Control) == Keys.Control;
+
+                if (includeAttachments && selection.Count == 1
+                    && selection[1] is MailItem mail && mail.Attachments.Count > 0)
                 {
-                    Logger.Log($"E-Mail mit {mail.Attachments.Count} Anhang/Anhaengen - lege Anhaenge automatisch ab");
-                    dragData = _handler.CreateDragDataFromAttachments(mail);
+                    Logger.Log($"Strg gehalten: E-Mail als .msg + {mail.Attachments.Count} Anhang/Anhaengen ablegen");
+                    dragData = _handler.CreateDragDataWithAttachments(mail);
                 }
                 else
                 {

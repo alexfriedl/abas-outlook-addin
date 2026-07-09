@@ -16,7 +16,7 @@
      xmlns:netfx="http://schemas.microsoft.com/wix/NetFxExtension">
 
   <Bundle Name="ABAS Outlook Drag &amp; Drop Add-in"
-          Version="1.1.0.0"
+          Version="1.2.0.0"
           Manufacturer="Ihr Unternehmen GmbH"
           UpgradeCode="{BBCCDDEE-FF00-1122-3344-556677889900}"
           IconSourceFile="abas_addin.ico">

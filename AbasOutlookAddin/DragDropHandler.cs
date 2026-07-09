@@ -205,17 +205,59 @@ namespace AbasOutlookAddin
         }
 
         /// <summary>
-        /// Extrahiert Anhänge einer selektierten E-Mail
+        /// Legt eine einzelne E-Mail als .msg UND zusätzlich alle echten Anhänge ab.
+        /// Wird genutzt, wenn beim Ziehen die Umschalttaste (Shift) gehalten wird.
+        /// Ohne Shift wird nur die .msg abgelegt (die Anhänge stecken darin ohnehin drin).
         /// </summary>
-        public DataObject CreateDragDataFromAttachments(MailItem mail)
+        public DataObject CreateDragDataWithAttachments(MailItem mail)
         {
-            if (mail?.Attachments == null || mail.Attachments.Count == 0)
+            if (mail == null)
                 return null;
 
             // Temp-Wachstum begrenzen (#8)
             EnforceTempLimit();
 
             var files = new List<string>();
+
+            // 1) Die E-Mail selbst als .msg
+            try
+            {
+                string msgPath = ExtractItem(mail);
+                if (!string.IsNullOrEmpty(msgPath))
+                {
+                    files.Add(msgPath);
+                    _tempFiles.Add(msgPath);
+                    Logger.Log($"Element extrahiert: {Path.GetFileName(msgPath)}");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Logger.LogError("Fehler beim Extrahieren der E-Mail", ex);
+            }
+
+            // 2) Zusätzlich alle echten Anhänge (keine eingebetteten Bilder)
+            files.AddRange(ExtractAttachments(mail));
+
+            if (files.Count == 0)
+                return null;
+
+            var dataObject = new DataObject();
+            var fileCollection = new System.Collections.Specialized.StringCollection();
+            fileCollection.AddRange(files.ToArray());
+            dataObject.SetFileDropList(fileCollection);
+
+            return dataObject;
+        }
+
+        /// <summary>
+        /// Speichert alle echten Anhänge (olByValue) einer E-Mail als Temp-Dateien
+        /// und gibt deren Pfade zurück. Eingebettete Bilder werden übersprungen.
+        /// </summary>
+        private List<string> ExtractAttachments(MailItem mail)
+        {
+            var files = new List<string>();
+            if (mail?.Attachments == null || mail.Attachments.Count == 0)
+                return files;
 
             foreach (Attachment attachment in mail.Attachments)
             {
@@ -246,16 +288,7 @@ namespace AbasOutlookAddin
                     Logger.LogError($"Fehler beim Extrahieren des Anhangs", ex);
                 }
             }
-
-            if (files.Count == 0)
-                return null;
-
-            var dataObject = new DataObject();
-            var fileCollection = new System.Collections.Specialized.StringCollection();
-            fileCollection.AddRange(files.ToArray());
-            dataObject.SetFileDropList(fileCollection);
-
-            return dataObject;
+            return files;
         }
 
         /// <summary>
