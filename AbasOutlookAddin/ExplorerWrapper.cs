@@ -108,6 +108,24 @@ namespace AbasOutlookAddin
         [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)]
         private static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder lpClassName, int nMaxCount);
 
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetCursorPos(out POINT lpPoint);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr WindowFromPoint(POINT point);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetCurrentProcessId();
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
+
+        private const uint GA_ROOT = 2;
+
         // POSITIVLISTE: ABAS-Drag wird AUSSCHLIESSLICH gestartet, wenn der Klick in der
         // Outlook-Nachrichtenliste (die Übersicht mit "Heute/Gestern/Letzte Woche ...")
         // beginnt. Deren Fensterklasse ist "SUPERGRID". Ein Klick im Schreib-/Lesebereich,
@@ -224,17 +242,21 @@ namespace AbasOutlookAddin
 
                 Logger.Log($"Drag gestartet mit {selection.Count} Element(e)");
 
+                // Strg-Zustand einmalig festhalten: dient sowohl der Anhang-Option als auch
+                // (per Windows-Konvention "Strg = Kopieren") als Signal, dass ein interner
+                // Outlook-Drop NICHT als Verschieben gewertet werden soll.
+                bool ctrlHeld = (Control.ModifierKeys & Keys.Control) == Keys.Control;
+
+                // Quell-EntryIDs VOR dem Extrahieren sichern (CreateDragData gibt die COM-Refs frei).
+                // Nur damit laesst sich nach einem internen Verschieben das Original entfernen.
+                var sourceRefs = _handler.CaptureItemIds(selection);
+
                 DataObject dragData;
 
                 // Standard: nur die .msg ablegen (die Anhänge stecken darin ohnehin drin).
                 // Wird beim Losziehen die Strg-Taste (Ctrl) gehalten, wird eine einzelne
                 // E-Mail zusätzlich mit allen Anhängen als separate Dateien abgelegt.
-                // Strg passt zur Windows-Konvention "Strg+Ziehen = Kopieren" und deckt sich
-                // mit dem hier erlaubten Effekt (Copy), sodass der Drop auch dann sauber
-                // bleibt, wenn Strg während des gesamten Ziehens gehalten wird.
-                bool includeAttachments = (Control.ModifierKeys & Keys.Control) == Keys.Control;
-
-                if (includeAttachments && selection.Count == 1
+                if (ctrlHeld && selection.Count == 1
                     && selection[1] is MailItem mail && mail.Attachments.Count > 0)
                 {
                     Logger.Log($"Strg gehalten: E-Mail als .msg + {mail.Attachments.Count} Anhang/Anhaengen ablegen");
@@ -247,7 +269,9 @@ namespace AbasOutlookAddin
 
                 if (dragData == null) return;
 
-                // Standard OLE Drag & Drop – Ziel (ABAS) empfängt echtes CF_HDROP.
+                // OLE Drag & Drop mit Copy (ABAS empfaengt CF_HDROP). Ein interner Outlook-Drop
+                // meldet ebenfalls Copy; ob daraus ein Verschieben wird, entscheidet danach
+                // TryCompleteInternalMove anhand des Ziel-Fensters (nicht anhand des Effekts).
                 DragDropEffects result;
                 using (var dragSource = new Control())
                 {
@@ -255,6 +279,10 @@ namespace AbasOutlookAddin
                 }
 
                 Logger.Log($"Drag beendet, Ergebnis: {result}");
+
+                // Internen Outlook-Drop erkennen und ggf. als echtes Verschieben abschliessen.
+                TryCompleteInternalMove(result, ctrlHeld, sourceRefs);
+
                 _handler.ScheduleCleanup();
             }
             catch (System.Exception ex)
@@ -266,6 +294,77 @@ namespace AbasOutlookAddin
             {
                 _dragInProgress = false;
             }
+        }
+
+        /// <summary>
+        /// Schliesst einen internen Outlook-Drop als echtes Verschieben ab.
+        /// Entfernt die Quell-Elemente NUR, wenn alle Sicherheitsbedingungen erfuellt sind:
+        ///   1) kein Strg (Strg = Kopieren),
+        ///   2) der Drop wurde angenommen (Ergebnis != None),
+        ///   3) das Ziel-Fenster gehoert zu Outlook selbst (gleiche Prozess-ID; ABAS ist ein
+        ///      anderer Prozess und kann so NIE ein Loeschen ausloesen),
+        ///   4) der Drop landete im Outlook-HAUPTFENSTER (gleiches Wurzelfenster wie der Explorer).
+        ///      Ein Verfassen-/Inspector-Fenster ist ein eigenes Top-Level-Fenster und faellt damit
+        ///      raus – so wird eine als Anhang gezogene Mail NICHT geloescht (Outlook meldet fuer
+        ///      Ordner-Drops und Anhang-Drops gleichermassen 'Copy', deshalb reicht der Effekt nicht),
+        ///   5) das Ziel ist NICHT die Nachrichtenliste selbst (Drop zurueck auf die Liste != Verschieben).
+        /// Faellt eine Bedingung weg, bleibt es beim bisherigen Verhalten (Kopie) – kein Datenverlust.
+        /// </summary>
+        private void TryCompleteInternalMove(DragDropEffects result, bool ctrlHeld,
+            System.Collections.Generic.IList<DragDropHandler.ItemRef> sourceRefs)
+        {
+            try
+            {
+                if (ctrlHeld) return;                        // Strg = Kopieren
+                if (result == DragDropEffects.None) return;  // Drop abgebrochen/abgelehnt
+                if (sourceRefs == null || sourceRefs.Count == 0) return;
+
+                IntPtr targetHwnd = GetDropTargetWindow();
+                string cls = GetWindowClass(targetHwnd);
+                GetWindowThreadProcessId(targetHwnd, out uint targetPid);
+                uint ownPid = GetCurrentProcessId();
+
+                IntPtr dropRoot = GetAncestor(targetHwnd, GA_ROOT);
+                IntPtr explorerRoot = GetExplorerRootWindow();
+                bool sameMainWindow = dropRoot != IntPtr.Zero && dropRoot == explorerRoot;
+
+                Logger.Log($"Drop-Ziel: Klasse='{cls}', ZielPID={targetPid}, EigenePID={ownPid}, " +
+                           $"Effekt={result}, DropRoot={dropRoot}, ExplorerRoot={explorerRoot}, Hauptfenster={sameMainWindow}");
+
+                if (targetPid != ownPid) return;             // externes Ziel (z. B. ABAS) -> niemals loeschen
+                if (!sameMainWindow) return;                 // eigenes Fenster (z. B. Verfassen) -> Anhang, nicht verschieben
+                if (IsMessageList(targetHwnd)) return;       // zurueck auf die Nachrichtenliste -> kein Verschieben
+
+                int deleted = _handler.DeleteItemsById(sourceRefs);
+                Logger.Log($"Internes Verschieben abgeschlossen: {deleted} Quell-Element(e) entfernt.");
+            }
+            catch (System.Exception ex)
+            {
+                Logger.LogError("Fehler beim Abschliessen des internen Verschiebens", ex);
+            }
+        }
+
+        /// <summary>Wurzelfenster (Top-Level) des Outlook-Explorers, ueber IOleWindow ermittelt.</summary>
+        private IntPtr GetExplorerRootWindow()
+        {
+            try
+            {
+                if (_explorer is IOleWindow oleWindow)
+                {
+                    oleWindow.GetWindow(out IntPtr hwnd);
+                    return GetAncestor(hwnd, GA_ROOT);
+                }
+            }
+            catch { }
+            return IntPtr.Zero;
+        }
+
+        /// <summary>Ermittelt das Fenster unter dem Mauszeiger (Drop-Zielpunkt).</summary>
+        private static IntPtr GetDropTargetWindow()
+        {
+            if (!GetCursorPos(out POINT p))
+                return IntPtr.Zero;
+            return WindowFromPoint(p);
         }
 
         public void Dispose()

@@ -448,6 +448,158 @@ namespace AbasOutlookAddin
             return path;
         }
 
+        /// <summary>
+        /// Leichtgewichtige Referenz auf ein Outlook-Element (EntryID + StoreID),
+        /// mit der sich das Element nach dem Drag zum Loeschen wiederfinden laesst.
+        /// Haelt bewusst KEINE COM-Referenz.
+        /// </summary>
+        public sealed class ItemRef
+        {
+            public string EntryId;
+            public string StoreId;
+            public string Subject;
+        }
+
+        /// <summary>
+        /// Sichert vor dem Drag die EntryIDs der selektierten Elemente, damit sie
+        /// nach einem internen Outlook-Verschieben gezielt entfernt werden koennen.
+        /// Gibt KEINE COM-Referenzen zurueck (alle werden hier freigegeben).
+        /// </summary>
+        public List<ItemRef> CaptureItemIds(Selection selection)
+        {
+            var refs = new List<ItemRef>();
+            if (selection == null || selection.Count == 0)
+                return refs;
+
+            foreach (object item in selection)
+            {
+                try
+                {
+                    if (TryGetItemRef(item, out ItemRef reference))
+                        refs.Add(reference);
+                }
+                catch (System.Exception ex)
+                {
+                    Logger.LogError("EntryID konnte nicht ermittelt werden", ex);
+                }
+                finally
+                {
+                    if (item != null && Marshal.IsComObject(item))
+                        Marshal.ReleaseComObject(item);
+                }
+            }
+            return refs;
+        }
+
+        private static bool TryGetItemRef(object item, out ItemRef reference)
+        {
+            reference = null;
+            string entryId = null, storeId = null, subject = null;
+
+            if (item is MailItem mail)
+            {
+                entryId = mail.EntryID; subject = mail.Subject; storeId = GetStoreId(mail.Parent);
+            }
+            else if (item is ContactItem contact)
+            {
+                entryId = contact.EntryID; subject = contact.FullName; storeId = GetStoreId(contact.Parent);
+            }
+            else if (item is AppointmentItem appointment)
+            {
+                entryId = appointment.EntryID; subject = appointment.Subject; storeId = GetStoreId(appointment.Parent);
+            }
+            else if (item is TaskItem task)
+            {
+                entryId = task.EntryID; subject = task.Subject; storeId = GetStoreId(task.Parent);
+            }
+            else
+            {
+                return false;
+            }
+
+            if (string.IsNullOrEmpty(entryId))
+                return false;
+
+            reference = new ItemRef { EntryId = entryId, StoreId = storeId, Subject = subject };
+            return true;
+        }
+
+        /// <summary>Liest die StoreID aus dem Eltern-Ordner (fuer GetItemFromID bei Nicht-Standard-Stores).</summary>
+        private static string GetStoreId(object parent)
+        {
+            try
+            {
+                if (parent is Folder folder)
+                    return folder.StoreID;
+            }
+            catch { }
+            finally
+            {
+                if (parent != null && Marshal.IsComObject(parent))
+                    Marshal.ReleaseComObject(parent);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Entfernt die zuvor per <see cref="CaptureItemIds"/> gesicherten Quell-Elemente.
+        /// Wird nur nach einem erkannten internen Outlook-Verschieben aufgerufen.
+        /// Loeschen erfolgt via .Delete() -> Ordner "Geloeschte Elemente" (wiederherstellbar).
+        /// </summary>
+        public int DeleteItemsById(IList<ItemRef> refs)
+        {
+            if (refs == null || refs.Count == 0)
+                return 0;
+
+            int deleted = 0;
+            NameSpace session = null;
+            try
+            {
+                session = _outlookApp.Session;
+                foreach (var r in refs)
+                {
+                    object item = null;
+                    try
+                    {
+                        item = string.IsNullOrEmpty(r.StoreId)
+                            ? session.GetItemFromID(r.EntryId)
+                            : session.GetItemFromID(r.EntryId, r.StoreId);
+
+                        if (item != null && DeleteOutlookItem(item))
+                        {
+                            deleted++;
+                            Logger.Log($"Quell-Element nach Verschieben entfernt: {r.Subject}");
+                        }
+                    }
+                    catch (System.Exception ex)
+                    {
+                        // Kann fehlschlagen, wenn Outlook das Original bereits selbst verschoben hat -> ok.
+                        Logger.LogError($"Quell-Element konnte nicht entfernt werden (evtl. schon verschoben): {r.Subject}", ex);
+                    }
+                    finally
+                    {
+                        if (item != null && Marshal.IsComObject(item))
+                            Marshal.ReleaseComObject(item);
+                    }
+                }
+            }
+            finally
+            {
+                if (session != null && Marshal.IsComObject(session))
+                    Marshal.ReleaseComObject(session);
+            }
+            return deleted;
+        }
+
+        private static bool DeleteOutlookItem(object item)
+        {
+            if (item is MailItem mail) { mail.Delete(); return true; }
+            if (item is ContactItem contact) { contact.Delete(); return true; }
+            if (item is AppointmentItem appointment) { appointment.Delete(); return true; }
+            if (item is TaskItem task) { task.Delete(); return true; }
+            return false;
+        }
+
         public void Dispose()
         {
             if (!_disposed)

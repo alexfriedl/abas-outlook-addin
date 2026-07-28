@@ -137,6 +137,26 @@ msiexec.exe /i AbasOutlookAddin.msi /qn
    Es wird dann `.msg` **+** alle Anhänge abgelegt.
 5. In das ABAS-Fenster ziehen und loslassen ✓
 
+### Verschieben innerhalb Outlook (ab v1.3.0)
+
+Wird eine E-Mail **innerhalb von Outlook** auf einen anderen Ordner gezogen, wird sie jetzt
+korrekt **verschoben** statt kopiert. Das Original landet als Sicherheitsnetz in „Gelöschte
+Elemente" (wiederherstellbar).
+
+Die Löschung der Quell-Mail erfolgt **nur**, wenn der Drop eindeutig ein interner Ordner-Move
+ist – abgesichert über mehrere Bedingungen (siehe `ExplorerWrapper.TryCompleteInternalMove`):
+
+- kein Strg gehalten (Strg = weiterhin kopieren),
+- das Ziel-Fenster gehört zum **Outlook-Prozess selbst** (der ABAS-Client ist ein anderer
+  Prozess und kann so **nie** ein Löschen auslösen),
+- der Drop landete im **Outlook-Hauptfenster** (gleiches Wurzelfenster wie der Explorer) –
+  ein Verfassen-/Inspector-Fenster ist ein eigenes Top-Level-Fenster und fällt heraus, sodass
+  eine als **Anhang** in eine neue Mail gezogene E-Mail **nicht** gelöscht wird,
+- das Ziel ist nicht die Nachrichtenliste selbst.
+
+Trifft eine Bedingung nicht zu, bleibt es beim bisherigen Verhalten (Kopie) – **kein Datenverlust
+im Zweifelsfall.**
+
 > **Hinweis:** Das Add-in hat **keine sichtbare Oberfläche** (kein Menüband-Button, kein Symbol).
 > Es arbeitet unsichtbar im Hintergrund und reagiert nur auf das Ziehen mit der Maus.
 
