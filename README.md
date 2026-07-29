@@ -134,8 +134,31 @@ msiexec.exe /i AbasOutlookAddin.msi /qn
 3. Standardmäßig wird die E-Mail als **`.msg`** abgelegt (die Anhänge sind darin enthalten).
 4. Zum **zusätzlichen** Ablegen aller Anhänge als separate Dateien: beim Losziehen die
    **Strg-Taste** gedrückt halten (passend zur Windows-Konvention „Strg+Ziehen = Kopieren").
-   Es wird dann `.msg` **+** alle Anhänge abgelegt.
+   Es wird dann `.msg` **+** alle Anhänge abgelegt. Signatur-Logos und andere im Text
+   eingebettete Bilder werden dabei **nicht** mit abgelegt (ab v1.4.0).
 5. In das ABAS-Fenster ziehen und loslassen ✓
+
+### Anhänge direkt ins DMS ziehen (ab v1.4.0)
+
+Ein **einzelner Anhang** lässt sich jetzt direkt aus der E-Mail ins ABAS ziehen – ohne Umweg
+über die `.msg`:
+
+1. Anhang im **Lesebereich** oder in der **geöffneten E-Mail** anklicken (Mehrfachauswahl mit
+   Strg/Shift möglich)
+2. Von dort aus ins ABAS-Fenster ziehen ✓
+
+Hintergrund: Outlooks eigener Anhang-Drag liefert *virtuelle* Dateien
+(`FileGroupDescriptor`/`FileContents`). Der ABAS-Client nimmt aber nur echte Dateipfade
+(`CF_HDROP`) an – deshalb legt das Add-in die markierten Anhänge selbst als Temp-Dateien ab
+und reicht deren Pfade weiter.
+
+- Der Anhang-Drag startet **nur**, wenn Outlook tatsächlich markierte Anhänge meldet
+  (`Explorer.AttachmentSelection` bzw. `Inspector.AttachmentSelection`). Ist nichts markiert,
+  verhält sich das Add-in wie bisher und Outlook macht seinen eigenen Drag.
+- Anhänge werden **nie** aus der Quell-Mail entfernt – das Verschieben-Verhalten aus v1.3.0
+  greift hier bewusst nicht.
+- **OLE-Objekte** (z. B. eingebettete Excel-Bereiche) lassen sich technisch nicht als Datei
+  speichern und werden übersprungen (steht im Log). Eingebettete E-Mails landen als `.msg`.
 
 ### Verschieben innerhalb Outlook (ab v1.3.0)
 
@@ -157,6 +180,25 @@ ist – abgesichert über mehrere Bedingungen (siehe `ExplorerWrapper.TryComplet
 Trifft eine Bedingung nicht zu, bleibt es beim bisherigen Verhalten (Kopie) – **kein Datenverlust
 im Zweifelsfall.**
 
+#### Verschieben abschalten (ab v1.4.0)
+
+Outlook importiert beim internen Drop die abgelegte `.msg` als **neues** Element; das Original
+wandert in „Gelöschte Elemente". Bis der Ordner geleert wird, liegt die Mail damit **doppelt**
+im Postfach. Wer das nicht will, schaltet das Verschieben ab – die Quell-Mail bleibt dann
+immer erhalten (Verhalten wie bis v1.2.0):
+
+```cmd
+:: pro Benutzer
+reg add "HKCU\Software\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 0 /f
+
+:: oder unternehmensweit per GPO/Rollout
+reg add "HKLM\SOFTWARE\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 0 /f
+```
+
+`1` oder kein Eintrag = Verschieben aktiv (Standard). HKCU sticht HKLM. Die Einstellung wird
+beim Start von Outlook gelesen und im Log protokolliert
+(`ABAS Outlook Add-in erfolgreich geladen (internes Verschieben: aus)`).
+
 > **Hinweis:** Das Add-in hat **keine sichtbare Oberfläche** (kein Menüband-Button, kein Symbol).
 > Es arbeitet unsichtbar im Hintergrund und reagiert nur auf das Ziehen mit der Maus.
 
@@ -171,7 +213,8 @@ Da es keine sichtbare UI gibt, lässt sich der Status so kontrollieren:
    **angehakt** sein. Steht er unter *Deaktivierte Anwendungs-Add-Ins*, wieder aktivieren.
 2. **Log-Datei** (sicherster Nachweis): `%LOCALAPPDATA%\AbasOutlookAddin\Logs\addin_JJJJMMTT.log`.
    Beim Start steht dort `ABAS Outlook Add-in erfolgreich geladen.` und
-   `Maus-Ueberwachung installiert`. Bei einem Drag erscheint `Drag gestartet mit N Element(e)`.
+   `Maus-Ueberwachung installiert`. Bei einem Drag erscheint `Drag gestartet mit N Element(e)`,
+   beim Ziehen eines Anhangs `Anhang-Drag gestartet mit N Anhang/Anhaengen`.
 3. **Funktionstest ohne ABAS:** `Test\AbasDropTest.exe` starten (akzeptiert nur echte
    Dateipfade/CF_HDROP) und eine E-Mail hineinziehen – erscheint der Dateipfad, funktioniert alles.
 

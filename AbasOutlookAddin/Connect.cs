@@ -48,7 +48,10 @@ namespace AbasOutlookAddin
                 // Neuen Explorer überwachen
                 _outlookApp.Explorers.NewExplorer += Explorers_NewExplorer;
 
-                Logger.Log("ABAS Outlook Add-in erfolgreich geladen.");
+                // Einstellungen einmal beim Start protokollieren – so ist im Log sofort
+                // sichtbar, mit welchem Verhalten das Add-in beim Anwender laeuft.
+                Logger.Log($"ABAS Outlook Add-in erfolgreich geladen (internes Verschieben: " +
+                           $"{(Settings.InternalMoveEnabled ? "aktiv" : "aus")}).");
             }
             catch (System.Exception ex)
             {
@@ -102,7 +105,7 @@ namespace AbasOutlookAddin
 
         private void AttachExplorerEvents(Explorer explorer)
         {
-            var explorerWrapper = new ExplorerWrapper(explorer, _dragDropHandler);
+            var explorerWrapper = new ExplorerWrapper(_outlookApp, explorer, _dragDropHandler);
             explorerWrapper.Attach();
             _explorerWrappers.Add(explorerWrapper);
         }

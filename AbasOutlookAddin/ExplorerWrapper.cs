@@ -25,14 +25,17 @@ namespace AbasOutlookAddin
     /// </summary>
     public class ExplorerWrapper : IDisposable
     {
+        private readonly Microsoft.Office.Interop.Outlook.Application _app;
         private readonly Explorer _explorer;
         private readonly DragDropHandler _handler;
 
         // Referenz halten, damit GC den Hook (und sein Delegate) nicht abräumt.
         private MouseDragWatcher _watcher;
 
-        public ExplorerWrapper(Explorer explorer, DragDropHandler handler)
+        public ExplorerWrapper(Microsoft.Office.Interop.Outlook.Application app,
+            Explorer explorer, DragDropHandler handler)
         {
+            _app = app;
             _explorer = explorer;
             _handler = handler;
         }
@@ -45,7 +48,7 @@ namespace AbasOutlookAddin
                 if (_explorer is IOleWindow oleWindow)
                     oleWindow.GetWindow(out hwnd);
 
-                _watcher = new MouseDragWatcher(_explorer, _handler);
+                _watcher = new MouseDragWatcher(_app, _explorer, _handler);
                 _watcher.Install();
 
                 Logger.Log($"Maus-Ueberwachung installiert (Explorer-HWND {hwnd}).");
@@ -153,6 +156,7 @@ namespace AbasOutlookAddin
             return n > 0 ? sb.ToString() : string.Empty;
         }
 
+        private readonly Microsoft.Office.Interop.Outlook.Application _app;
         private readonly Explorer _explorer;
         private readonly DragDropHandler _handler;
         private readonly HookProc _proc;   // Feld -> verhindert GC des Delegates
@@ -164,8 +168,14 @@ namespace AbasOutlookAddin
         private bool _dragInProgress; // Reentrancy-Schutz (#6)
         private bool _disposed;
 
-        public MouseDragWatcher(Explorer explorer, DragDropHandler handler)
+        // Beim Mausklick gesicherte Anhang-Auswahl (siehe WM_LBUTTONDOWN).
+        private System.Collections.Generic.List<Attachment> _capturedAttachments;
+        private string _capturedSource;
+
+        public MouseDragWatcher(Microsoft.Office.Interop.Outlook.Application app,
+            Explorer explorer, DragDropHandler handler)
         {
+            _app = app;
             _explorer = explorer;
             _handler = handler;
             _proc = HookCallback;
@@ -194,6 +204,14 @@ namespace AbasOutlookAddin
                             _mouseDown = true;
                             _downPoint = hs.pt;
                             _downHwnd = hs.hwnd;   // Fenster unter dem Cursor merken
+
+                            // Anhang-Auswahl JETZT sichern: Der Hook laeuft noch VOR Outlooks
+                            // eigener Klick-Verarbeitung, die eine Mehrfachauswahl auf den
+                            // angeklickten Anhang zusammenklappt. Beim spaeteren Drag-Start
+                            // waere davon nur noch ein Anhang uebrig (#Mehrfachauswahl).
+                            ReleaseCapturedAttachments();
+                            if (!IsMessageList(_downHwnd))
+                                _capturedAttachments = CaptureAttachmentSelection(out _capturedSource);
                             break;
 
                         case WM_MOUSEMOVE:
@@ -201,14 +219,16 @@ namespace AbasOutlookAddin
                             {
                                 _mouseDown = false;
 
-                                // Drag NUR aus der Nachrichtenliste (SUPERGRID) starten.
+                                // Element-Drag NUR aus der Nachrichtenliste (SUPERGRID).
+                                // Ausserhalb der Liste kommt ab v1.4.0 der Anhang-Drag zum Zug –
+                                // aber nur, wenn Outlook tatsaechlich markierte Anhaenge meldet.
                                 if (IsMessageList(_downHwnd))
                                 {
                                     InitiateDrag();
                                 }
                                 else
                                 {
-                                    Logger.Log($"Drag ignoriert (kein Listen-Fenster, Klasse='{GetWindowClass(_downHwnd)}').");
+                                    InitiateAttachmentDrag();
                                 }
                             }
                             break;
@@ -297,6 +317,240 @@ namespace AbasOutlookAddin
         }
 
         /// <summary>
+        /// Startet einen Drag fuer die im Lesebereich bzw. in einer geoeffneten E-Mail
+        /// MARKIERTEN Anhaenge (ab v1.4.0). Outlooks eigener Anhang-Drag liefert
+        /// FileGroupDescriptor/FileContents – der ABAS-Client nimmt aber nur CF_HDROP an,
+        /// deshalb legen wir die Anhaenge selbst als Temp-Dateien ab.
+        ///
+        /// Gestartet wird ausschliesslich, wenn Outlook eine nicht-leere AttachmentSelection
+        /// meldet. Ist nichts markiert, verhaelt sich das Add-in wie bisher (Drag ignoriert)
+        /// und Outlook macht seinen eigenen Drag.
+        /// </summary>
+        private void InitiateAttachmentDrag()
+        {
+            if (_dragInProgress) return;
+
+            // Beim Klick gesicherte Auswahl (kann mehrere Anhaenge enthalten) ...
+            var captured = _capturedAttachments;
+            string capturedSource = _capturedSource;
+            _capturedAttachments = null;   // ab hier gehoert die Liste dieser Methode
+
+            // ... und die Auswahl, die Outlook JETZT meldet (nach dem Zusammenklappen
+            // meist nur noch der angeklickte Anhang).
+            var live = CaptureAttachmentSelection(out string liveSource);
+
+            System.Collections.Generic.List<Attachment> attachments;
+            string source;
+
+            if (captured != null && captured.Count > (live?.Count ?? 0))
+            {
+                attachments = captured;
+                source = capturedSource + ", Auswahl beim Klick";
+                Logger.Log($"Mehrfachauswahl gerettet: beim Klick {captured.Count}, jetzt {live?.Count ?? 0} Anhang/Anhaenge.");
+            }
+            else
+            {
+                attachments = live;
+                source = liveSource;
+            }
+
+            try
+            {
+                if (attachments == null || attachments.Count == 0)
+                {
+                    Logger.Log($"Drag ignoriert (kein Listen-Fenster, keine Anhang-Auswahl, Klasse='{GetWindowClass(_downHwnd)}').");
+                    return;
+                }
+
+                _dragInProgress = true;
+                Logger.Log($"Anhang-Drag gestartet mit {attachments.Count} Anhang/Anhaengen " +
+                           $"(Quelle: {source}, Klasse='{GetWindowClass(_downHwnd)}').");
+
+                DataObject dragData = _handler.CreateDragDataFromAttachments(attachments);
+
+                // Rueckfall: Falls die beim Klick gesicherten COM-Referenzen inzwischen
+                // veraltet sind, wenigstens den angeklickten Anhang liefern.
+                if (dragData == null && !ReferenceEquals(attachments, live) && live != null && live.Count > 0)
+                {
+                    Logger.Log("Gesicherte Auswahl nicht mehr verwendbar – nutze aktuelle Auswahl.");
+                    dragData = _handler.CreateDragDataFromAttachments(live);
+                    attachments = live;
+                }
+
+                if (dragData == null)
+                {
+                    Logger.Log("Anhang-Drag abgebrochen: kein Anhang konnte als Datei abgelegt werden.");
+                    return;
+                }
+
+                DragDropEffects result;
+                using (var dragSource = new Control())
+                {
+                    result = dragSource.DoDragDrop(dragData, DragDropEffects.Copy);
+                }
+
+                Logger.Log($"Anhang-Drag beendet, Ergebnis: {result}");
+
+                // Bewusst KEIN TryCompleteInternalMove: Anhaenge werden nie aus der
+                // Quell-Mail entfernt, egal wohin sie gezogen werden.
+                _handler.ScheduleCleanup();
+            }
+            catch (System.Exception ex)
+            {
+                Logger.LogError("Fehler beim Initiieren des Anhang-Drags", ex);
+                _handler.ScheduleCleanup();
+            }
+            finally
+            {
+                // Beide Listen freigeben (die genutzte und die verworfene); der Rueckfall
+                // oben braucht 'live' bis hierher, deshalb erst jetzt.
+                ReleaseAttachments(captured);
+                if (!ReferenceEquals(live, captured))
+                    ReleaseAttachments(live);
+                _dragInProgress = false;
+            }
+        }
+
+        /// <summary>
+        /// Liest die aktuell markierten Anhaenge aus und materialisiert sie als Liste.
+        /// Materialisiert wird bewusst sofort: Die COM-Auswahl selbst kann sich aendern,
+        /// die einzelnen Attachment-Objekte bleiben nutzbar.
+        /// </summary>
+        private System.Collections.Generic.List<Attachment> CaptureAttachmentSelection(out string source)
+        {
+            AttachmentSelection selection = GetAttachmentSelection(out source);
+            var list = new System.Collections.Generic.List<Attachment>();
+            if (selection == null)
+                return list;
+
+            try
+            {
+                foreach (object entry in selection)
+                {
+                    if (entry is Attachment attachment)
+                        list.Add(attachment);
+                    else
+                        ReleaseIfCom(entry);
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Logger.LogError("Anhang-Auswahl konnte nicht gelesen werden", ex);
+            }
+            finally
+            {
+                ReleaseIfCom(selection);
+            }
+
+            return list;
+        }
+
+        private void ReleaseCapturedAttachments()
+        {
+            ReleaseAttachments(_capturedAttachments);
+            _capturedAttachments = null;
+            _capturedSource = null;
+        }
+
+        private static void ReleaseAttachments(System.Collections.Generic.IList<Attachment> attachments)
+        {
+            if (attachments == null) return;
+            foreach (var attachment in attachments)
+                ReleaseIfCom(attachment);
+            attachments.Clear();
+        }
+
+        /// <summary>
+        /// Holt die markierten Anhaenge – bevorzugt aus der Quelle, in der der Drag begann:
+        /// gleiches Wurzelfenster wie der Explorer -> Lesebereich, sonst geoeffnete E-Mail
+        /// (Inspector). Die jeweils andere Quelle dient als Rueckfallebene.
+        /// </summary>
+        private AttachmentSelection GetAttachmentSelection(out string source)
+        {
+            IntPtr downRoot = GetAncestor(_downHwnd, GA_ROOT);
+            IntPtr explorerRoot = GetExplorerRootWindow();
+            bool startedInExplorer = downRoot != IntPtr.Zero && downRoot == explorerRoot;
+
+            if (startedInExplorer)
+            {
+                var fromExplorer = TryGetExplorerAttachments();
+                if (fromExplorer != null && fromExplorer.Count > 0) { source = "Lesebereich"; return fromExplorer; }
+                ReleaseIfCom(fromExplorer);
+
+                var fromInspector = TryGetInspectorAttachments();
+                if (fromInspector != null && fromInspector.Count > 0) { source = "geoeffnete E-Mail"; return fromInspector; }
+                ReleaseIfCom(fromInspector);
+            }
+            else
+            {
+                var fromInspector = TryGetInspectorAttachments();
+                if (fromInspector != null && fromInspector.Count > 0) { source = "geoeffnete E-Mail"; return fromInspector; }
+                ReleaseIfCom(fromInspector);
+
+                var fromExplorer = TryGetExplorerAttachments();
+                if (fromExplorer != null && fromExplorer.Count > 0) { source = "Lesebereich"; return fromExplorer; }
+                ReleaseIfCom(fromExplorer);
+            }
+
+            source = null;
+            return null;
+        }
+
+        // Die Auswahl wird bei JEDEM Klick ausserhalb der Liste abgefragt – Fehler
+        // deshalb nur einmal protokollieren, sonst laeuft das Log voll.
+        private bool _explorerSelectionErrorLogged;
+        private bool _inspectorSelectionErrorLogged;
+
+        private AttachmentSelection TryGetExplorerAttachments()
+        {
+            try
+            {
+                return _explorer?.AttachmentSelection;
+            }
+            catch (System.Exception ex)
+            {
+                // Wirft z. B., wenn der Lesebereich aus ist oder die Outlook-Version
+                // die Eigenschaft im aktuellen Kontext nicht bedient.
+                if (!_explorerSelectionErrorLogged)
+                {
+                    _explorerSelectionErrorLogged = true;
+                    Logger.LogError("Explorer.AttachmentSelection nicht verfuegbar (wird nur einmal protokolliert)", ex);
+                }
+                return null;
+            }
+        }
+
+        private AttachmentSelection TryGetInspectorAttachments()
+        {
+            try
+            {
+                // Inspector bewusst NICHT freigeben – Outlook haelt das aktive
+                // Inspector-Fenster ohnehin, und die Selection haengt daran.
+                Inspector inspector = _app?.ActiveInspector();
+                return inspector?.AttachmentSelection;
+            }
+            catch (System.Exception ex)
+            {
+                if (!_inspectorSelectionErrorLogged)
+                {
+                    _inspectorSelectionErrorLogged = true;
+                    Logger.LogError("Inspector.AttachmentSelection nicht verfuegbar (wird nur einmal protokolliert)", ex);
+                }
+                return null;
+            }
+        }
+
+        private static void ReleaseIfCom(object obj)
+        {
+            try
+            {
+                if (obj != null && Marshal.IsComObject(obj))
+                    Marshal.ReleaseComObject(obj);
+            }
+            catch { }
+        }
+
+        /// <summary>
         /// Schliesst einen internen Outlook-Drop als echtes Verschieben ab.
         /// Entfernt die Quell-Elemente NUR, wenn alle Sicherheitsbedingungen erfuellt sind:
         ///   1) kein Strg (Strg = Kopieren),
@@ -315,6 +569,7 @@ namespace AbasOutlookAddin
         {
             try
             {
+                if (!Settings.InternalMoveEnabled) return;   // per Registry abgeschaltet
                 if (ctrlHeld) return;                        // Strg = Kopieren
                 if (result == DragDropEffects.None) return;  // Drop abgebrochen/abgelehnt
                 if (sourceRefs == null || sourceRefs.Count == 0) return;
@@ -371,6 +626,7 @@ namespace AbasOutlookAddin
         {
             if (_disposed) return;
             _disposed = true;
+            ReleaseCapturedAttachments();
             if (_hookId != IntPtr.Zero)
             {
                 UnhookWindowsHookEx(_hookId);
