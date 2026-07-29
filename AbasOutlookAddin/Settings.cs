@@ -12,8 +12,8 @@ namespace AbasOutlookAddin
     ///
     ///   HKCU\Software\ABAS Outlook Addin  bzw.
     ///   HKLM\SOFTWARE\ABAS Outlook Addin
-    ///     InternalMove (REG_DWORD)  1 = internes Verschieben aktiv (Standard)
-    ///                               0 = aus: Quell-Mail bleibt immer erhalten
+    ///     InternalMove (REG_DWORD)  0 = aus: Quell-Mail bleibt immer erhalten (Standard)
+    ///                               1 = internes Verschieben aktiv (v1.3.0-Verhalten)
     /// </summary>
     internal static class Settings
     {
@@ -26,10 +26,11 @@ namespace AbasOutlookAddin
         /// Steuert, ob ein Drop innerhalb Outlooks die Quell-Mail entfernt (echtes
         /// Verschieben, v1.3.0) oder ob sie stehen bleibt (Kopie, Verhalten bis v1.2.0).
         ///
-        /// Hintergrund fuer das Abschalten: Beim Verschieben importiert Outlook die
-        /// abgelegte .msg als neues Element, das Original wandert in "Geloeschte
-        /// Elemente". Bis der Ordner geleert wird, liegt die Mail damit doppelt im
-        /// Postfach – bei grossen Postfaechern unerwuenscht.
+        /// STANDARD AB v1.4.1: AUS. Grund (Anwender-Feedback FAPA): Beim Verschieben
+        /// importiert Outlook die abgelegte .msg als neues Element, das Original wandert
+        /// in "Geloeschte Elemente". Bis der Ordner geleert wird, liegt die Mail damit
+        /// doppelt im Postfach. Das Wiedereinschalten erfolgt bewusst ueber die Registry
+        /// (Rollout/GPO) und nicht durch den Anwender.
         /// </summary>
         public static bool InternalMoveEnabled
         {
@@ -37,7 +38,7 @@ namespace AbasOutlookAddin
             {
                 if (!_internalMoveEnabled.HasValue)
                 {
-                    _internalMoveEnabled = ReadFlag(ValueInternalMove, true);
+                    _internalMoveEnabled = ReadFlag(ValueInternalMove, false);
                     Logger.Log($"Einstellung InternalMove = {(_internalMoveEnabled.Value ? "1 (Verschieben aktiv)" : "0 (Verschieben aus)")}");
                 }
                 return _internalMoveEnabled.Value;

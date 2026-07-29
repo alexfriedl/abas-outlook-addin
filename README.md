@@ -160,11 +160,12 @@ und reicht deren Pfade weiter.
 - **OLE-Objekte** (z. B. eingebettete Excel-Bereiche) lassen sich technisch nicht als Datei
   speichern und werden übersprungen (steht im Log). Eingebettete E-Mails landen als `.msg`.
 
-### Verschieben innerhalb Outlook (ab v1.3.0)
+### Verschieben innerhalb Outlook (v1.3.0, ab v1.4.1 standardmäßig aus)
 
-Wird eine E-Mail **innerhalb von Outlook** auf einen anderen Ordner gezogen, wird sie jetzt
-korrekt **verschoben** statt kopiert. Das Original landet als Sicherheitsnetz in „Gelöschte
-Elemente" (wiederherstellbar).
+Wird eine E-Mail **innerhalb von Outlook** auf einen anderen Ordner gezogen, kann sie
+**verschoben** statt kopiert werden. Das Original landet als Sicherheitsnetz in „Gelöschte
+Elemente" (wiederherstellbar). **Ab v1.4.1 ist das standardmäßig abgeschaltet** – siehe
+unten, warum und wie man es wieder einschaltet.
 
 Die Löschung der Quell-Mail erfolgt **nur**, wenn der Drop eindeutig ein interner Ordner-Move
 ist – abgesichert über mehrere Bedingungen (siehe `ExplorerWrapper.TryCompleteInternalMove`):
@@ -180,22 +181,26 @@ ist – abgesichert über mehrere Bedingungen (siehe `ExplorerWrapper.TryComplet
 Trifft eine Bedingung nicht zu, bleibt es beim bisherigen Verhalten (Kopie) – **kein Datenverlust
 im Zweifelsfall.**
 
-#### Verschieben abschalten (ab v1.4.0)
+#### Ab v1.4.1 standardmäßig AUS
 
 Outlook importiert beim internen Drop die abgelegte `.msg` als **neues** Element; das Original
 wandert in „Gelöschte Elemente". Bis der Ordner geleert wird, liegt die Mail damit **doppelt**
-im Postfach. Wer das nicht will, schaltet das Verschieben ab – die Quell-Mail bleibt dann
-immer erhalten (Verhalten wie bis v1.2.0):
+im Postfach. Weil das bei großen Postfächern unerwünscht ist, ist das Verschieben **ab v1.4.1
+standardmäßig deaktiviert**: Ein interner Drop kopiert, die Quell-Mail bleibt erhalten
+(Verhalten wie bis v1.2.0).
+
+Wer das Verschieben will, aktiviert es per Registry – bewusst über Rollout/GPO und nicht
+durch den Anwender:
 
 ```cmd
 :: pro Benutzer
-reg add "HKCU\Software\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 0 /f
+reg add "HKCU\Software\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 1 /f
 
-:: oder unternehmensweit per GPO/Rollout
-reg add "HKLM\SOFTWARE\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 0 /f
+:: oder unternehmensweit
+reg add "HKLM\SOFTWARE\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 1 /f
 ```
 
-`1` oder kein Eintrag = Verschieben aktiv (Standard). HKCU sticht HKLM. Die Einstellung wird
+`0` oder kein Eintrag = Verschieben aus (Standard). HKCU sticht HKLM. Die Einstellung wird
 beim Start von Outlook gelesen und im Log protokolliert
 (`ABAS Outlook Add-in erfolgreich geladen (internes Verschieben: aus)`).
 
