@@ -592,6 +592,11 @@ namespace AbasOutlookAddin
 
                 int deleted = _handler.DeleteItemsById(sourceRefs);
                 Logger.Log($"Internes Verschieben abgeschlossen: {deleted} Quell-Element(e) entfernt.");
+
+                // Damit im Papierkorb nichts liegen bleibt: verzoegert endgueltig entfernen,
+                // aber nur mit Nachweis, dass die Mail im Zielordner angekommen ist.
+                if (deleted > 0)
+                    _handler.SchedulePermanentPurge(sourceRefs);
             }
             catch (System.Exception ex)
             {

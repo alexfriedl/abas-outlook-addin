@@ -652,6 +652,14 @@ namespace AbasOutlookAddin
             public string EntryId;
             public string StoreId;
             public string Subject;
+
+            /// <summary>
+            /// PR_INTERNET_MESSAGE_ID – überlebt das Verschieben in „Gelöschte Elemente"
+            /// und identifiziert die Mail eindeutig. Nur damit lässt sich die Quell-Mail
+            /// nach dem Löschen im Papierkorb wiederfinden und die Kopie im Zielordner
+            /// nachweisen. Fehlt sie (z. B. Entwürfe), wird NICHT endgültig gelöscht.
+            /// </summary>
+            public string MessageId;
         }
 
         /// <summary>
@@ -714,8 +722,38 @@ namespace AbasOutlookAddin
             if (string.IsNullOrEmpty(entryId))
                 return false;
 
-            reference = new ItemRef { EntryId = entryId, StoreId = storeId, Subject = subject };
+            reference = new ItemRef
+            {
+                EntryId = entryId,
+                StoreId = storeId,
+                Subject = subject,
+                MessageId = GetMessageId(item)
+            };
             return true;
+        }
+
+        /// <summary>PR_INTERNET_MESSAGE_ID – eindeutige Kennung, die das Verschieben überlebt.</summary>
+        private const string PropInternetMessageId = "http://schemas.microsoft.com/mapi/proptag/0x1035001F";
+
+        private static string GetMessageId(object item)
+        {
+            PropertyAccessor accessor = null;
+            try
+            {
+                dynamic outlookItem = item;
+                accessor = outlookItem.PropertyAccessor as PropertyAccessor;
+                return accessor?.GetProperty(PropInternetMessageId) as string;
+            }
+            catch
+            {
+                // Nicht jedes Element hat die Eigenschaft (z. B. Entwürfe, Termine).
+                return null;
+            }
+            finally
+            {
+                if (accessor != null && Marshal.IsComObject(accessor))
+                    Marshal.ReleaseComObject(accessor);
+            }
         }
 
         /// <summary>Liest die StoreID aus dem Eltern-Ordner (fuer GetItemFromID bei Nicht-Standard-Stores).</summary>
@@ -783,6 +821,200 @@ namespace AbasOutlookAddin
                     Marshal.ReleaseComObject(session);
             }
             return deleted;
+        }
+
+        /// <summary>
+        /// Entfernt die zuvor gelöschten Quell-Elemente ENDGÜLTIG aus „Gelöschte Elemente",
+        /// sodass das interne Verschieben keine Kopie im Papierkorb hinterlässt.
+        ///
+        /// Sicherheitsnetz: Endgültig gelöscht wird nur, wenn dieselbe Mail (identifiziert
+        /// über PR_INTERNET_MESSAGE_ID) NACHWEISLICH noch woanders im Postfach liegt – also
+        /// im Zielordner, in den Outlook sie beim Drop importiert hat. Fehlt dieser Nachweis,
+        /// bleibt die Mail im Papierkorb liegen (Verhalten wie v1.3.0). Kein Datenverlust,
+        /// wenn der Import schiefgegangen ist.
+        ///
+        /// Läuft verzögert, weil Outlook den Import erst abschliessen muss.
+        /// </summary>
+        public void SchedulePermanentPurge(IList<ItemRef> refs)
+        {
+            if (refs == null || refs.Count == 0) return;
+
+            var purgeable = new List<ItemRef>();
+            foreach (var r in refs)
+            {
+                if (!string.IsNullOrEmpty(r.MessageId))
+                    purgeable.Add(r);
+                else
+                    Logger.Log($"Papierkorb-Bereinigung uebersprungen (keine Message-ID): {r.Subject}");
+            }
+            if (purgeable.Count == 0) return;
+
+            var timer = new Timer { Interval = 2000 };
+            timer.Tick += (s, e) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                try { PurgeFromDeletedItems(purgeable); }
+                catch (System.Exception ex) { Logger.LogError("Papierkorb-Bereinigung fehlgeschlagen", ex); }
+            };
+            timer.Start();
+        }
+
+        private void PurgeFromDeletedItems(List<ItemRef> refs)
+        {
+            NameSpace session = null;
+            try
+            {
+                session = _outlookApp.Session;
+                foreach (var r in refs)
+                {
+                    Store store = null;
+                    Folder deletedItems = null;
+                    object inTrash = null;
+                    object elsewhere = null;
+                    try
+                    {
+                        store = string.IsNullOrEmpty(r.StoreId)
+                            ? session.DefaultStore
+                            : session.GetStoreFromID(r.StoreId);
+                        deletedItems = store?.GetDefaultFolder(OlDefaultFolders.olFolderDeletedItems) as Folder;
+                        if (deletedItems == null) continue;
+
+                        inTrash = FindByMessageId(deletedItems, r.MessageId);
+                        if (inTrash == null)
+                        {
+                            Logger.Log($"Papierkorb-Bereinigung: Quell-Mail nicht im Papierkorb gefunden: {r.Subject}");
+                            continue;
+                        }
+
+                        // NACHWEIS: Liegt die Mail sonst noch irgendwo im selben Postfach?
+                        int folderBudget = 150;
+                        elsewhere = FindInStoreExcept(store, deletedItems.EntryID, r.MessageId, ref folderBudget);
+                        if (elsewhere == null)
+                        {
+                            Logger.Log($"Papierkorb-Bereinigung uebersprungen (keine Kopie im Postfach gefunden, " +
+                                       $"Mail bleibt im Papierkorb): {r.Subject}");
+                            continue;
+                        }
+
+                        // Zweites Delete auf ein Element im Papierkorb = endgueltig entfernt.
+                        if (DeleteOutlookItem(inTrash))
+                            Logger.Log($"Quell-Mail endgueltig entfernt (Kopie im Zielordner nachgewiesen): {r.Subject}");
+                    }
+                    catch (System.Exception ex)
+                    {
+                        Logger.LogError($"Papierkorb-Bereinigung fehlgeschlagen fuer: {r.Subject}", ex);
+                    }
+                    finally
+                    {
+                        ReleaseCom(elsewhere);
+                        ReleaseCom(inTrash);
+                        ReleaseCom(deletedItems);
+                        ReleaseCom(store);
+                    }
+                }
+            }
+            finally
+            {
+                ReleaseCom(session);
+            }
+        }
+
+        /// <summary>Sucht in einem Ordner nach der Mail mit dieser Message-ID (MAPI-Restriktion).</summary>
+        private static object FindByMessageId(Folder folder, string messageId)
+        {
+            Items items = null;
+            try
+            {
+                items = folder.Items;
+                string filter = "@SQL=\"" + PropInternetMessageId + "\" = '" + messageId.Replace("'", "''") + "'";
+                return items.Find(filter);
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                ReleaseCom(items);
+            }
+        }
+
+        /// <summary>
+        /// Durchsucht den Ordnerbaum des Postfachs nach der Mail – ohne den Papierkorb.
+        /// Bricht beim ersten Treffer ab; das Ordner-Budget verhindert, dass Outlook bei
+        /// sehr grossen Postfaechern spuerbar haengt (dann lieber kein endgueltiges Loeschen).
+        /// </summary>
+        private static object FindInStoreExcept(Store store, string excludedFolderId, string messageId, ref int budget)
+        {
+            Folder root = null;
+            try
+            {
+                root = store.GetRootFolder() as Folder;
+                return FindInFolderTree(root, excludedFolderId, messageId, ref budget);
+            }
+            catch (System.Exception ex)
+            {
+                Logger.LogError("Postfach konnte nicht durchsucht werden", ex);
+                return null;
+            }
+            finally
+            {
+                ReleaseCom(root);
+            }
+        }
+
+        private static object FindInFolderTree(Folder folder, string excludedFolderId, string messageId, ref int budget)
+        {
+            if (folder == null || budget <= 0) return null;
+            budget--;
+
+            try
+            {
+                if (!string.Equals(folder.EntryID, excludedFolderId, StringComparison.OrdinalIgnoreCase))
+                {
+                    object hit = FindByMessageId(folder, messageId);
+                    if (hit != null) return hit;
+                }
+            }
+            catch { }
+
+            Folders subFolders = null;
+            try
+            {
+                subFolders = folder.Folders;
+                foreach (Folder sub in subFolders)
+                {
+                    object hit = null;
+                    try
+                    {
+                        hit = FindInFolderTree(sub, excludedFolderId, messageId, ref budget);
+                        if (hit != null) return hit;
+                    }
+                    finally
+                    {
+                        if (hit == null) ReleaseCom(sub);
+                    }
+                    if (budget <= 0) break;
+                }
+            }
+            catch { }
+            finally
+            {
+                ReleaseCom(subFolders);
+            }
+
+            return null;
+        }
+
+        private static void ReleaseCom(object obj)
+        {
+            try
+            {
+                if (obj != null && Marshal.IsComObject(obj))
+                    Marshal.ReleaseComObject(obj);
+            }
+            catch { }
         }
 
         private static bool DeleteOutlookItem(object item)

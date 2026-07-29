@@ -16,7 +16,7 @@
     Das Add-in ermöglicht es, E-Mails und Anhänge direkt aus Outlook in den ABAS Windows-Client zu ziehen.
   </String>
 
-  <String Id="InstallVersion">Version 1.4.1</String>
+  <String Id="InstallVersion">Version 1.4.2</String>
   <String Id="InstallLicense">Lizenzvereinbarung</String>
   <String Id="InstallLicenseAccept">Ich akzeptiere die Bedingungen der Lizenzvereinbarung</String>
   <String Id="InstallLicenseDecline">Ich akzeptiere die Bedingungen der Lizenzvereinbarung nicht</String>

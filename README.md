@@ -181,28 +181,34 @@ ist – abgesichert über mehrere Bedingungen (siehe `ExplorerWrapper.TryComplet
 Trifft eine Bedingung nicht zu, bleibt es beim bisherigen Verhalten (Kopie) – **kein Datenverlust
 im Zweifelsfall.**
 
-#### Ab v1.4.1 standardmäßig AUS
+#### Kein Rest im Papierkorb (ab v1.4.2)
 
 Outlook importiert beim internen Drop die abgelegte `.msg` als **neues** Element; das Original
-wandert in „Gelöschte Elemente". Bis der Ordner geleert wird, liegt die Mail damit **doppelt**
-im Postfach. Weil das bei großen Postfächern unerwünscht ist, ist das Verschieben **ab v1.4.1
-standardmäßig deaktiviert**: Ein interner Drop kopiert, die Quell-Mail bleibt erhalten
-(Verhalten wie bis v1.2.0).
+muss deshalb entfernt werden. Bis v1.4.1 landete es in „Gelöschte Elemente" und lag damit
+doppelt im Postfach. **Ab v1.4.2 wird die Quell-Mail endgültig entfernt** – im Papierkorb
+bleibt nichts liegen.
 
-Wer das Verschieben will, aktiviert es per Registry – bewusst über Rollout/GPO und nicht
-durch den Anwender:
+Abgesichert über einen Nachweis (`DragDropHandler.SchedulePermanentPurge`): Endgültig gelöscht
+wird **nur**, wenn dieselbe Mail – identifiziert über `PR_INTERNET_MESSAGE_ID` – nachweislich
+noch woanders im selben Postfach liegt, also im Zielordner angekommen ist. Ohne diesen Nachweis
+bleibt sie im Papierkorb liegen (Verhalten wie v1.3.0). Das gilt auch, wenn die Mail keine
+Message-ID hat oder das Postfach zu viele Ordner für die Suche hat (Budget: 150 Ordner).
+
+Der Nachweis läuft 2 Sekunden nach dem Drop, weil Outlook den Import erst abschließen muss.
+
+Wer das Verschieben ganz abschalten will (interner Drop kopiert dann wieder, Quell-Mail bleibt
+erhalten – Verhalten wie bis v1.2.0):
 
 ```cmd
 :: pro Benutzer
-reg add "HKCU\Software\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 1 /f
+reg add "HKCU\Software\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 0 /f
 
 :: oder unternehmensweit
-reg add "HKLM\SOFTWARE\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 1 /f
+reg add "HKLM\SOFTWARE\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 0 /f
 ```
 
-`0` oder kein Eintrag = Verschieben aus (Standard). HKCU sticht HKLM. Die Einstellung wird
-beim Start von Outlook gelesen und im Log protokolliert
-(`ABAS Outlook Add-in erfolgreich geladen (internes Verschieben: aus)`).
+`1` oder kein Eintrag = Verschieben aktiv (Standard). HKCU sticht HKLM. Die Einstellung wird
+beim Start von Outlook gelesen und im Log protokolliert.
 
 > **Hinweis:** Das Add-in hat **keine sichtbare Oberfläche** (kein Menüband-Button, kein Symbol).
 > Es arbeitet unsichtbar im Hintergrund und reagiert nur auf das Ziehen mit der Maus.
