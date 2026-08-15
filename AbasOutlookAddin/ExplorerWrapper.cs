@@ -291,12 +291,7 @@ namespace AbasOutlookAddin
                             // waere davon nur noch ein Anhang uebrig (#Mehrfachauswahl).
                             ReleaseCapturedAttachments();
                             if (!IsMessageList(_downHwnd))
-                            {
-                                // Was liegt unter dem Zeiger? Wird beim Drag-Start gebraucht,
-                                // um "Anhang angeklickt" von "Text markiert" zu unterscheiden.
-                                _downAccName = string.Join(" | ", GetAccessibleNamesAt(hs.pt));   // nur fuers Log
                                 _capturedAttachments = CaptureAttachmentSelection(out _capturedSource);
-                            }
                             break;
 
                         case WM_MOUSEMOVE:
@@ -354,9 +349,6 @@ namespace AbasOutlookAddin
             int key = SystemInformation.MouseButtonsSwapped ? VK_RBUTTON : VK_LBUTTON;
             return (GetAsyncKeyState(key) & 0x8000) != 0;
         }
-
-        // Name des Elements, auf das geklickt wurde (Barrierefreiheits-Schnittstelle).
-        private string _downAccName;
 
         private bool _textDragLogged;
 
@@ -500,11 +492,11 @@ namespace AbasOutlookAddin
                 //
                 // Bewusst die AKTUELLE Zeigerposition und nicht die beim Mausklick gemerkte:
                 // Der thread-lokale Hook verpasst gelegentlich ein WM_LBUTTONDOWN (real
-                // beobachtet beim Klick auf den Anhang-Chip). Dann zeigen _downHwnd und
-                // _downAccName noch auf die VORIGE Geste – und genau daraus entstand das
-                // gemeldete Verhalten "Text wird nicht markiert, stattdessen haengt der Anhang
-                // an der anderen Mail". Ein echter Anhang-Drag beginnt mit wenigen Pixeln
-                // Bewegung und steht dabei noch auf dem Anhang.
+                // beobachtet beim Klick auf den Anhang-Chip). Dann zeigt _downHwnd noch auf die
+                // VORIGE Geste – und genau daraus entstand das gemeldete Verhalten "Text wird
+                // nicht markiert, stattdessen haengt der Anhang an der anderen Mail". Ein echter
+                // Anhang-Drag beginnt mit wenigen Pixeln Bewegung und steht dabei noch auf dem
+                // Anhang.
                 var overNow = GetAccessibleNamesAt(CursorPoint());
                 if (!PointerIsOnAttachment(overNow, attachments))
                 {
