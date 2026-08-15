@@ -18,6 +18,9 @@ namespace AbasOutlookAddin
     {
         private readonly Application _outlookApp;
         private readonly List<string> _tempFiles = new List<string>();
+
+        // Die Bereinigung laeuft seit v1.5.0 im Hintergrund, das Befuellen auf dem UI-Thread.
+        private readonly object _tempLock = new object();
         private readonly string _tempDir;
         private bool _disposed;
 
@@ -29,9 +32,25 @@ namespace AbasOutlookAddin
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "AbasOutlookAddin", "Temp");
 
+        /// <summary>
+        /// Unsichtbares Steuerelement auf Outlooks UI-Thread. Dient nur dazu, verzoegerte
+        /// Arbeit wieder auf diesen Thread zu bringen (Outlook-COM darf nur dort laufen).
+        ///
+        /// Frueher wurde dafuer ein System.Windows.Forms.Timer benutzt. Der haengt an WM_TIMER,
+        /// und WM_TIMER ist die Nachricht mit der NIEDRIGSTEN Prioritaet: Solange Outlook
+        /// Nachrichten in der Warteschlange hat – etwa waehrend einer IMAP-Synchronisation –
+        /// wird sie nicht zugestellt. Real beobachtet: Das Aufraeumen nach einem Verschieben
+        /// lief 7 Minuten lang nicht an. Ein Thread-Timer plus BeginInvoke postet dagegen eine
+        /// normale Nachricht und kommt zuverlaessig durch.
+        /// </summary>
+        private readonly Control _uiMarshal;
+
         public DragDropHandler(Application outlookApp)
         {
             _outlookApp = outlookApp;
+
+            _uiMarshal = new Control();
+            var _ = _uiMarshal.Handle;   // Handle erzwingen, sonst kann BeginInvoke nichts posten
 
             // Alte Temp-Dateien aus vorherigen Sessions aufräumen (#2 - Crash-Recovery)
             CleanupStaleTempDirectories();
@@ -132,7 +151,7 @@ namespace AbasOutlookAddin
                     if (!string.IsNullOrEmpty(filePath))
                     {
                         files.Add(filePath);
-                        _tempFiles.Add(filePath);
+                        AddTempFile(filePath);
                         Logger.Log($"Element extrahiert: {Path.GetFileName(filePath)}");
                     }
                 }
@@ -226,7 +245,7 @@ namespace AbasOutlookAddin
                 if (!string.IsNullOrEmpty(msgPath))
                 {
                     files.Add(msgPath);
-                    _tempFiles.Add(msgPath);
+                    AddTempFile(msgPath);
                     Logger.Log($"Element extrahiert: {Path.GetFileName(msgPath)}");
                 }
             }
@@ -284,7 +303,7 @@ namespace AbasOutlookAddin
                     if (!string.IsNullOrEmpty(tempPath))
                     {
                         files.Add(tempPath);
-                        _tempFiles.Add(tempPath);
+                        AddTempFile(tempPath);
                     }
                 }
                 catch (System.Exception ex)
@@ -371,7 +390,7 @@ namespace AbasOutlookAddin
                     if (!string.IsNullOrEmpty(tempPath))
                     {
                         files.Add(tempPath);
-                        _tempFiles.Add(tempPath);
+                        AddTempFile(tempPath);
                     }
                 }
                 catch (System.Exception ex)
@@ -494,14 +513,14 @@ namespace AbasOutlookAddin
         /// </summary>
         public void ScheduleCleanup()
         {
-            var timer = new Timer { Interval = 30000 }; // 30 Sekunden
-            timer.Tick += (s, e) =>
+            // Loeschen von Dateien braucht kein Outlook-COM -> darf im Hintergrund laufen.
+            System.Threading.Timer timer = null;
+            timer = new System.Threading.Timer(_ =>
             {
-                timer.Stop();
-                CleanupTempFiles();
-                timer.Dispose();
-            };
-            timer.Start();
+                try { timer.Dispose(); } catch { }
+                try { CleanupTempFiles(); }
+                catch (System.Exception ex) { Logger.LogError("Temp-Bereinigung fehlgeschlagen", ex); }
+            }, null, 30000, System.Threading.Timeout.Infinite);
         }
 
         /// <summary>
@@ -509,16 +528,29 @@ namespace AbasOutlookAddin
         /// </summary>
         private void EnforceTempLimit()
         {
-            if (_tempFiles.Count >= MaxTempFiles)
+            int count; lock (_tempLock) { count = _tempFiles.Count; }
+            if (count >= MaxTempFiles)
             {
                 Logger.Log($"Temp-Limit ({MaxTempFiles}) erreicht, erzwinge Cleanup");
                 CleanupTempFiles();
             }
         }
 
+        private void AddTempFile(string path)
+        {
+            lock (_tempLock) { _tempFiles.Add(path); }
+        }
+
         private void CleanupTempFiles()
         {
-            foreach (var file in _tempFiles)
+            List<string> files;
+            lock (_tempLock)
+            {
+                files = new List<string>(_tempFiles);
+                _tempFiles.Clear();
+            }
+
+            foreach (var file in files)
             {
                 try
                 {
@@ -540,7 +572,6 @@ namespace AbasOutlookAddin
                     Logger.LogError($"Konnte Temp-Datei nicht loeschen", ex);
                 }
             }
-            _tempFiles.Clear();
         }
 
         /// <summary>
@@ -654,12 +685,20 @@ namespace AbasOutlookAddin
             public string Subject;
 
             /// <summary>
-            /// PR_INTERNET_MESSAGE_ID – überlebt das Verschieben in „Gelöschte Elemente"
-            /// und identifiziert die Mail eindeutig. Nur damit lässt sich die Quell-Mail
-            /// nach dem Löschen im Papierkorb wiederfinden und die Kopie im Zielordner
-            /// nachweisen. Fehlt sie (z. B. Entwürfe), wird NICHT endgültig gelöscht.
+            /// PR_INTERNET_MESSAGE_ID – überlebt das Verschieben in „Gelöschte Elemente".
+            /// Achtung: bei IMAP-Konten ist die Eigenschaft haeufig LEER (real gemessen am
+            /// Testpostfach), deshalb darf die Identitaet nicht allein daran haengen.
             /// </summary>
             public string MessageId;
+
+            /// <summary>Ordner, aus dem gezogen wurde – dort darf der Ankunftsnachweis nicht gesucht werden.</summary>
+            public string SourceFolderId;
+
+            /// <summary>Empfangszeit; ueberlebt den .msg-Umweg und dient als Identitaetsmerkmal.</summary>
+            public DateTime ReceivedTime;
+
+            /// <summary>Absenderadresse; zweites Identitaetsmerkmal, wenn die Message-ID fehlt.</summary>
+            public string SenderAddress;
         }
 
         /// <summary>
@@ -696,23 +735,30 @@ namespace AbasOutlookAddin
         private static bool TryGetItemRef(object item, out ItemRef reference)
         {
             reference = null;
-            string entryId = null, storeId = null, subject = null;
+            string entryId = null, storeId = null, subject = null, folderId = null, sender = null;
+            DateTime received = DateTime.MinValue;
 
             if (item is MailItem mail)
             {
-                entryId = mail.EntryID; subject = mail.Subject; storeId = GetStoreId(mail.Parent);
+                entryId = mail.EntryID; subject = mail.Subject;
+                ReadParent(mail.Parent, out storeId, out folderId);
+                try { received = mail.ReceivedTime; } catch { }
+                try { sender = mail.SenderEmailAddress; } catch { }
             }
             else if (item is ContactItem contact)
             {
-                entryId = contact.EntryID; subject = contact.FullName; storeId = GetStoreId(contact.Parent);
+                entryId = contact.EntryID; subject = contact.FullName;
+                ReadParent(contact.Parent, out storeId, out folderId);
             }
             else if (item is AppointmentItem appointment)
             {
-                entryId = appointment.EntryID; subject = appointment.Subject; storeId = GetStoreId(appointment.Parent);
+                entryId = appointment.EntryID; subject = appointment.Subject;
+                ReadParent(appointment.Parent, out storeId, out folderId);
             }
             else if (item is TaskItem task)
             {
-                entryId = task.EntryID; subject = task.Subject; storeId = GetStoreId(task.Parent);
+                entryId = task.EntryID; subject = task.Subject;
+                ReadParent(task.Parent, out storeId, out folderId);
             }
             else
             {
@@ -727,7 +773,10 @@ namespace AbasOutlookAddin
                 EntryId = entryId,
                 StoreId = storeId,
                 Subject = subject,
-                MessageId = GetMessageId(item)
+                MessageId = GetMessageId(item),
+                SourceFolderId = folderId,
+                ReceivedTime = received,
+                SenderAddress = sender
             };
             return true;
         }
@@ -756,13 +805,17 @@ namespace AbasOutlookAddin
             }
         }
 
-        /// <summary>Liest die StoreID aus dem Eltern-Ordner (fuer GetItemFromID bei Nicht-Standard-Stores).</summary>
-        private static string GetStoreId(object parent)
+        /// <summary>Liest Store- und Ordner-ID aus dem Eltern-Ordner und gibt die COM-Referenz frei.</summary>
+        private static void ReadParent(object parent, out string storeId, out string folderId)
         {
+            storeId = null; folderId = null;
             try
             {
                 if (parent is Folder folder)
-                    return folder.StoreID;
+                {
+                    storeId = folder.StoreID;
+                    folderId = folder.EntryID;
+                }
             }
             catch { }
             finally
@@ -770,146 +823,138 @@ namespace AbasOutlookAddin
                 if (parent != null && Marshal.IsComObject(parent))
                     Marshal.ReleaseComObject(parent);
             }
-            return null;
         }
 
         /// <summary>
-        /// Entfernt die zuvor per <see cref="CaptureItemIds"/> gesicherten Quell-Elemente.
-        /// Wird nur nach einem erkannten internen Outlook-Verschieben aufgerufen.
-        /// Loeschen erfolgt via .Delete() -> Ordner "Geloeschte Elemente" (wiederherstellbar).
-        /// </summary>
-        public int DeleteItemsById(IList<ItemRef> refs)
-        {
-            if (refs == null || refs.Count == 0)
-                return 0;
-
-            int deleted = 0;
-            NameSpace session = null;
-            try
-            {
-                session = _outlookApp.Session;
-                foreach (var r in refs)
-                {
-                    object item = null;
-                    try
-                    {
-                        item = string.IsNullOrEmpty(r.StoreId)
-                            ? session.GetItemFromID(r.EntryId)
-                            : session.GetItemFromID(r.EntryId, r.StoreId);
-
-                        if (item != null && DeleteOutlookItem(item))
-                        {
-                            deleted++;
-                            Logger.Log($"Quell-Element nach Verschieben entfernt: {r.Subject}");
-                        }
-                    }
-                    catch (System.Exception ex)
-                    {
-                        // Kann fehlschlagen, wenn Outlook das Original bereits selbst verschoben hat -> ok.
-                        Logger.LogError($"Quell-Element konnte nicht entfernt werden (evtl. schon verschoben): {r.Subject}", ex);
-                    }
-                    finally
-                    {
-                        if (item != null && Marshal.IsComObject(item))
-                            Marshal.ReleaseComObject(item);
-                    }
-                }
-            }
-            finally
-            {
-                if (session != null && Marshal.IsComObject(session))
-                    Marshal.ReleaseComObject(session);
-            }
-            return deleted;
-        }
-
-        /// <summary>
-        /// Entfernt die zuvor gelöschten Quell-Elemente ENDGÜLTIG aus „Gelöschte Elemente",
-        /// sodass das interne Verschieben keine Kopie im Papierkorb hinterlässt.
+        /// Schliesst ein internes Verschieben ab – aber nur fuer Elemente, deren Kopie im
+        /// Postfach NACHWEISLICH angekommen ist.
         ///
-        /// Sicherheitsnetz: Endgültig gelöscht wird nur, wenn dieselbe Mail (identifiziert
-        /// über PR_INTERNET_MESSAGE_ID) NACHWEISLICH noch woanders im Postfach liegt – also
-        /// im Zielordner, in den Outlook sie beim Drop importiert hat. Fehlt dieser Nachweis,
-        /// bleibt die Mail im Papierkorb liegen (Verhalten wie v1.3.0). Kein Datenverlust,
-        /// wenn der Import schiefgegangen ist.
+        /// Hintergrund (Vorfall 2026-08): Bis v1.4.2 wurde die Quell-Mail allein deshalb
+        /// geloescht, weil der Drop irgendwo im Outlook-Hauptfenster gelandet ist und Outlook
+        /// "Copy" gemeldet hat. Ob Outlook die .msg tatsaechlich irgendwo importiert hat, wurde
+        /// nie geprueft – ein Drop, der nichts importiert, hat die Mail damit ersatzlos entfernt.
         ///
-        /// Läuft verzögert, weil Outlook den Import erst abschliessen muss.
+        /// Jetzt gilt: Erst suchen, dann loeschen. Geloescht wird ein Quell-Element nur, wenn im
+        /// selben Postfach eine Kopie existiert, die
+        ///   a) ausserhalb des Quellordners liegt,
+        ///   b) dieselbe Identitaet hat (Message-ID, sonst Betreff + Empfangszeit + Absender) und
+        ///   c) NEU ist, also nach dem Beginn dieses Drags angelegt wurde.
+        /// Bedingung c) ist entscheidend: ohne sie gilt jede alte Kopie derselben Mail (etwa in
+        /// "Gesendete Elemente" oder im Archiv) als Nachweis, und die Quell-Mail waere weg,
+        /// obwohl der Drop nichts bewirkt hat.
+        ///
+        /// Laeuft verzoegert, weil Outlook den Import erst abschliessen muss – und weil ein
+        /// Loeschen mitten in Outlooks Drop-Verarbeitung die Nachrichtenliste mit Geisterzeilen
+        /// zuruecklaesst ("Die E-Mail existiert nicht mehr", bis man den Ordner wechselt).
         /// </summary>
-        public void SchedulePermanentPurge(IList<ItemRef> refs)
+        public void ScheduleVerifiedMove(IList<ItemRef> refs, DateTime dragStarted)
         {
             if (refs == null || refs.Count == 0) return;
 
-            var purgeable = new List<ItemRef>();
-            foreach (var r in refs)
+            if (refs.Count > Settings.MaxAutoDelete)
             {
-                if (!string.IsNullOrEmpty(r.MessageId))
-                    purgeable.Add(r);
-                else
-                    Logger.Log($"Papierkorb-Bereinigung uebersprungen (keine Message-ID): {r.Subject}");
+                Logger.LogError($"SICHERHEIT: {refs.Count} Elemente in einem einzigen Drop – Grenze liegt bei " +
+                                $"{Settings.MaxAutoDelete}. Es wird KEIN Quell-Element entfernt (die Kopien bleiben " +
+                                $"im Zielordner, das Original bleibt erhalten).");
+                return;
             }
-            if (purgeable.Count == 0) return;
 
-            var timer = new Timer { Interval = 2000 };
-            timer.Tick += (s, e) =>
+            var pending = new List<ItemRef>(refs);
+            RunOnUiThreadAfter(2500, () =>
             {
-                timer.Stop();
-                timer.Dispose();
-                try { PurgeFromDeletedItems(purgeable); }
-                catch (System.Exception ex) { Logger.LogError("Papierkorb-Bereinigung fehlgeschlagen", ex); }
-            };
-            timer.Start();
+                try { CompleteVerifiedMove(pending, dragStarted); }
+                catch (System.Exception ex) { Logger.LogError("Internes Verschieben konnte nicht abgeschlossen werden", ex); }
+            });
         }
 
-        private void PurgeFromDeletedItems(List<ItemRef> refs)
+        /// <summary>
+        /// Fuehrt eine Aktion nach der angegebenen Verzoegerung auf Outlooks UI-Thread aus.
+        /// Siehe <see cref="_uiMarshal"/>, warum kein WinForms-Timer benutzt wird.
+        /// </summary>
+        private void RunOnUiThreadAfter(int delayMs, System.Action action)
+        {
+            System.Threading.Timer timer = null;
+            timer = new System.Threading.Timer(_ =>
+            {
+                try { timer.Dispose(); } catch { }
+                try
+                {
+                    if (_uiMarshal.IsHandleCreated && !_uiMarshal.IsDisposed)
+                        _uiMarshal.BeginInvoke(action);
+                }
+                catch (System.Exception ex)
+                {
+                    Logger.LogError("Verzoegerte Aktion konnte nicht eingereiht werden", ex);
+                }
+            }, null, delayMs, System.Threading.Timeout.Infinite);
+        }
+
+        /// <summary>
+        /// Begrenzt die Suche nach der importierten Kopie – geteilt ueber ALLE Elemente eines
+        /// Drops. Ohne gemeinsame Grenze bekam bei einer Mehrfachauswahl jedes Element sein
+        /// eigenes Ordner-Budget; bei 17 Mails und mehreren grossen Postfaechern stand Outlooks
+        /// UI-Thread dadurch minutenlang (real gemessen). Die Zeitgrenze ist die wichtigere:
+        /// Lieber nicht loeschen als Outlook einfrieren.
+        /// </summary>
+        private sealed class SearchBudget
+        {
+            private readonly DateTime _deadline;
+            public int Folders;
+
+            public SearchBudget(int folders, TimeSpan maxDuration)
+            {
+                Folders = folders;
+                _deadline = DateTime.Now + maxDuration;
+            }
+
+            public bool Exhausted => Folders <= 0 || DateTime.Now > _deadline;
+        }
+
+        private void CompleteVerifiedMove(List<ItemRef> refs, DateTime dragStarted)
         {
             NameSpace session = null;
+            int deleted = 0, unverified = 0;
+            var started = DateTime.Now;
+            var budget = new SearchBudget(200, TimeSpan.FromSeconds(3));
             try
             {
                 session = _outlookApp.Session;
                 foreach (var r in refs)
                 {
                     Store store = null;
-                    Folder deletedItems = null;
-                    object inTrash = null;
-                    object elsewhere = null;
+                    object arrived = null;
+                    object source = null;
                     try
                     {
                         store = string.IsNullOrEmpty(r.StoreId)
                             ? session.DefaultStore
                             : session.GetStoreFromID(r.StoreId);
-                        deletedItems = store?.GetDefaultFolder(OlDefaultFolders.olFolderDeletedItems) as Folder;
-                        if (deletedItems == null) continue;
 
-                        inTrash = FindByMessageId(deletedItems, r.MessageId);
-                        if (inTrash == null)
+                        arrived = FindArrivedCopyAnywhere(session, r, dragStarted, budget);
+                        if (arrived == null)
                         {
-                            Logger.Log($"Papierkorb-Bereinigung: Quell-Mail nicht im Papierkorb gefunden: {r.Subject}");
+                            unverified++;
+                            Logger.Log($"Quell-Element BLEIBT erhalten (keine neue Kopie im Postfach gefunden – " +
+                                       $"der Drop hat offenbar nichts importiert): {r.Subject}");
                             continue;
                         }
 
-                        // NACHWEIS: Liegt die Mail sonst noch irgendwo im selben Postfach?
-                        int folderBudget = 150;
-                        elsewhere = FindInStoreExcept(store, deletedItems.EntryID, r.MessageId, ref folderBudget);
-                        if (elsewhere == null)
-                        {
-                            Logger.Log($"Papierkorb-Bereinigung uebersprungen (keine Kopie im Postfach gefunden, " +
-                                       $"Mail bleibt im Papierkorb): {r.Subject}");
-                            continue;
-                        }
+                        source = string.IsNullOrEmpty(r.StoreId)
+                            ? session.GetItemFromID(r.EntryId)
+                            : session.GetItemFromID(r.EntryId, r.StoreId);
+                        if (source == null) continue;
 
-                        // Zweites Delete auf ein Element im Papierkorb = endgueltig entfernt.
-                        if (DeleteOutlookItem(inTrash))
-                            Logger.Log($"Quell-Mail endgueltig entfernt (Kopie im Zielordner nachgewiesen): {r.Subject}");
+                        if (RemoveSourceItem(store, source, r.Subject))
+                            deleted++;
                     }
                     catch (System.Exception ex)
                     {
-                        Logger.LogError($"Papierkorb-Bereinigung fehlgeschlagen fuer: {r.Subject}", ex);
+                        Logger.LogError($"Quell-Element konnte nicht entfernt werden: {r.Subject}", ex);
                     }
                     finally
                     {
-                        ReleaseCom(elsewhere);
-                        ReleaseCom(inTrash);
-                        ReleaseCom(deletedItems);
+                        ReleaseCom(source);
+                        ReleaseCom(arrived);
                         ReleaseCom(store);
                     }
                 }
@@ -918,40 +963,127 @@ namespace AbasOutlookAddin
             {
                 ReleaseCom(session);
             }
-        }
 
-        /// <summary>Sucht in einem Ordner nach der Mail mit dieser Message-ID (MAPI-Restriktion).</summary>
-        private static object FindByMessageId(Folder folder, string messageId)
-        {
-            Items items = null;
-            try
-            {
-                items = folder.Items;
-                string filter = "@SQL=\"" + PropInternetMessageId + "\" = '" + messageId.Replace("'", "''") + "'";
-                return items.Find(filter);
-            }
-            catch
-            {
-                return null;
-            }
-            finally
-            {
-                ReleaseCom(items);
-            }
+            string abbruch = budget.Exhausted ? " – Suchbudget erschoepft, im Zweifel NICHT geloescht" : string.Empty;
+            Logger.Log($"Internes Verschieben abgeschlossen: {deleted} entfernt, {unverified} ohne Nachweis behalten " +
+                       $"(Pruefung {(int)(DateTime.Now - started).TotalMilliseconds} ms{abbruch}).");
         }
 
         /// <summary>
-        /// Durchsucht den Ordnerbaum des Postfachs nach der Mail – ohne den Papierkorb.
-        /// Bricht beim ersten Treffer ab; das Ordner-Budget verhindert, dass Outlook bei
-        /// sehr grossen Postfaechern spuerbar haengt (dann lieber kein endgueltiges Loeschen).
+        /// Entfernt das Quell-Element. Mit aktiver Papierkorb-Bereinigung wird es zuerst nach
+        /// „Geloeschte Elemente" VERSCHOBEN – das Move liefert das Element im Papierkorb direkt
+        /// zurueck, ein zweites Delete darauf entfernt es endgueltig. Damit braucht es keine
+        /// Suche ueber PR_INTERNET_MESSAGE_ID mehr, die bei IMAP-Konten ohnehin ins Leere lief.
+        /// Hat das Postfach keinen Papierkorb (typisch fuer IMAP), bleibt es beim normalen Delete.
         /// </summary>
-        private static object FindInStoreExcept(Store store, string excludedFolderId, string messageId, ref int budget)
+        private static bool RemoveSourceItem(Store store, object source, string subject)
         {
-            Folder root = null;
+            if (Settings.PurgeFromTrashEnabled && source is MailItem mail)
+            {
+                Folder trash = null;
+                object inTrash = null;
+                try
+                {
+                    try { trash = store?.GetDefaultFolder(OlDefaultFolders.olFolderDeletedItems) as Folder; }
+                    catch { trash = null; }
+
+                    if (trash != null)
+                    {
+                        inTrash = mail.Move(trash);
+                        if (inTrash != null && DeleteOutlookItem(inTrash))
+                        {
+                            Logger.Log($"Quell-Mail entfernt und endgueltig aus dem Papierkorb geloescht: {subject}");
+                            return true;
+                        }
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    Logger.LogError($"Papierkorb-Bereinigung fehlgeschlagen, Element bleibt im Papierkorb: {subject}", ex);
+                    return true;
+                }
+                finally
+                {
+                    ReleaseCom(inTrash);
+                    ReleaseCom(trash);
+                }
+            }
+
+            if (DeleteOutlookItem(source))
+            {
+                Logger.Log($"Quell-Element nach Verschieben entfernt: {subject}");
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Sucht die neu entstandene Kopie in ALLEN eingebundenen Postfaechern – ein Drop kann
+        /// auch in einem anderen Konto landen. Beginnt beim Quell-Postfach, weil der Treffer
+        /// dort am wahrscheinlichsten ist.
+        /// </summary>
+        private static object FindArrivedCopyAnywhere(NameSpace session, ItemRef r, DateTime dragStarted,
+            SearchBudget budget)
+        {
+            Stores stores = null;
             try
             {
+                stores = session.Stores;
+                var ordered = new List<Store>();
+                foreach (Store s in stores)
+                {
+                    bool isSource = false;
+                    try { isSource = string.Equals(s.StoreID, r.StoreId, StringComparison.OrdinalIgnoreCase); }
+                    catch { }
+                    if (isSource) ordered.Insert(0, s); else ordered.Add(s);
+                }
+
+                foreach (var s in ordered)
+                {
+                    object hit = null;
+                    try
+                    {
+                        hit = FindArrivedCopy(s, r, dragStarted, budget);
+                        if (hit != null) return hit;
+                    }
+                    catch { }
+                    finally
+                    {
+                        if (hit == null) ReleaseCom(s);
+                    }
+                    if (budget.Exhausted) break;
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Logger.LogError("Postfaecher konnten nicht durchsucht werden", ex);
+            }
+            finally
+            {
+                ReleaseCom(stores);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Sucht in einem Postfach die beim Drop NEU entstandene Kopie des Elements.
+        /// Quellordner und Papierkorb bleiben aussen vor; das Ordner-Budget verhindert, dass
+        /// Outlook bei sehr grossen Postfaechern haengt (dann lieber nicht loeschen).
+        /// </summary>
+        private static object FindArrivedCopy(Store store, ItemRef r, DateTime dragStarted, SearchBudget budget)
+        {
+            if (store == null || string.IsNullOrEmpty(r.Subject))
+                return null;
+
+            Folder root = null;
+            string trashId = null;
+            try
+            {
+                try { trashId = (store.GetDefaultFolder(OlDefaultFolders.olFolderDeletedItems) as Folder)?.EntryID; }
+                catch { trashId = null; }
+
                 root = store.GetRootFolder() as Folder;
-                return FindInFolderTree(root, excludedFolderId, messageId, ref budget);
+                return SearchFolderTree(root, r, dragStarted, trashId, budget);
             }
             catch (System.Exception ex)
             {
@@ -964,16 +1096,20 @@ namespace AbasOutlookAddin
             }
         }
 
-        private static object FindInFolderTree(Folder folder, string excludedFolderId, string messageId, ref int budget)
+        private static object SearchFolderTree(Folder folder, ItemRef r, DateTime dragStarted,
+            string trashId, SearchBudget budget)
         {
-            if (folder == null || budget <= 0) return null;
-            budget--;
+            if (folder == null || budget.Exhausted) return null;
+            budget.Folders--;
 
             try
             {
-                if (!string.Equals(folder.EntryID, excludedFolderId, StringComparison.OrdinalIgnoreCase))
+                string id = folder.EntryID;
+                bool skip = string.Equals(id, r.SourceFolderId, StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(id, trashId, StringComparison.OrdinalIgnoreCase);
+                if (!skip)
                 {
-                    object hit = FindByMessageId(folder, messageId);
+                    object hit = FindFreshCopyInFolder(folder, r, dragStarted);
                     if (hit != null) return hit;
                 }
             }
@@ -988,14 +1124,14 @@ namespace AbasOutlookAddin
                     object hit = null;
                     try
                     {
-                        hit = FindInFolderTree(sub, excludedFolderId, messageId, ref budget);
+                        hit = SearchFolderTree(sub, r, dragStarted, trashId, budget);
                         if (hit != null) return hit;
                     }
                     finally
                     {
                         if (hit == null) ReleaseCom(sub);
                     }
-                    if (budget <= 0) break;
+                    if (budget.Exhausted) break;
                 }
             }
             catch { }
@@ -1005,6 +1141,84 @@ namespace AbasOutlookAddin
             }
 
             return null;
+        }
+
+        /// <summary>
+        /// Sucht in einem Ordner nach einer Kopie mit gleicher Identitaet, die NACH dem
+        /// Drag-Start angelegt wurde. Die Restriktion ueber den Betreff haelt die Suche billig.
+        /// </summary>
+        private static object FindFreshCopyInFolder(Folder folder, ItemRef r, DateTime dragStarted)
+        {
+            Items items = null;
+            try
+            {
+                items = folder.Items;
+                string filter = "@SQL=\"urn:schemas:httpmail:subject\" = '" + r.Subject.Replace("'", "''") + "'";
+                object candidate = items.Find(filter);
+                while (candidate != null)
+                {
+                    if (IsFreshCopyOf(candidate, r, dragStarted))
+                        return candidate;
+
+                    ReleaseCom(candidate);
+                    candidate = items.FindNext();
+                }
+            }
+            catch { }
+            finally
+            {
+                ReleaseCom(items);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Prueft, ob das gefundene Element wirklich die frisch importierte Kopie des
+        /// Quell-Elements ist – nicht das Original und keine alte Kopie aus dem Archiv
+        /// oder aus „Gesendete Elemente".
+        /// </summary>
+        private static bool IsFreshCopyOf(object candidate, ItemRef r, DateTime dragStarted)
+        {
+            if (!(candidate is MailItem mail)) return false;
+            try
+            {
+                if (string.Equals(mail.EntryID, r.EntryId, StringComparison.OrdinalIgnoreCase))
+                    return false;
+
+                // Nur was waehrend dieses Drags entstanden ist, zaehlt als Nachweis.
+                // Kleine Toleranz, weil Outlook den Import zeitlich leicht vorziehen kann.
+                if (mail.CreationTime < dragStarted.AddSeconds(-15))
+                    return false;
+
+                if (!string.IsNullOrEmpty(r.MessageId))
+                {
+                    string mid = GetMessageId(mail);
+                    if (!string.IsNullOrEmpty(mid))
+                        return string.Equals(mid, r.MessageId, StringComparison.OrdinalIgnoreCase);
+                }
+
+                // IMAP-Fall: ohne Message-ID ueber Empfangszeit und Absender identifizieren.
+                if (r.ReceivedTime != DateTime.MinValue)
+                {
+                    if (Math.Abs((mail.ReceivedTime - r.ReceivedTime).TotalSeconds) > 2)
+                        return false;
+                }
+
+                if (!string.IsNullOrEmpty(r.SenderAddress))
+                {
+                    string sender = null;
+                    try { sender = mail.SenderEmailAddress; } catch { }
+                    if (!string.IsNullOrEmpty(sender) &&
+                        !string.Equals(sender, r.SenderAddress, StringComparison.OrdinalIgnoreCase))
+                        return false;
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static void ReleaseCom(object obj)

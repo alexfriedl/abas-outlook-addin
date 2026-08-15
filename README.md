@@ -152,23 +152,48 @@ Hintergrund: Outlooks eigener Anhang-Drag liefert *virtuelle* Dateien
 (`CF_HDROP`) an – deshalb legt das Add-in die markierten Anhänge selbst als Temp-Dateien ab
 und reicht deren Pfade weiter.
 
-- Der Anhang-Drag startet **nur**, wenn Outlook tatsächlich markierte Anhänge meldet
-  (`Explorer.AttachmentSelection` bzw. `Inspector.AttachmentSelection`). Ist nichts markiert,
+- Der Anhang-Drag startet **nur**, wenn Outlook markierte Anhänge meldet
+  (`Explorer.AttachmentSelection` bzw. `Inspector.AttachmentSelection`) **und** der Mauszeiger
+  beim Losziehen auch wirklich auf einem dieser Anhänge steht (ab v1.5.0, siehe unten). Sonst
   verhält sich das Add-in wie bisher und Outlook macht seinen eigenen Drag.
 - Anhänge werden **nie** aus der Quell-Mail entfernt – das Verschieben-Verhalten aus v1.3.0
   greift hier bewusst nicht.
 - **OLE-Objekte** (z. B. eingebettete Excel-Bereiche) lassen sich technisch nicht als Datei
   speichern und werden übersprungen (steht im Log). Eingebettete E-Mails landen als `.msg`.
 
-### Verschieben innerhalb Outlook (v1.3.0, ab v1.4.1 standardmäßig aus)
+#### Kein Kapern der Textmarkierung (ab v1.5.0)
 
-Wird eine E-Mail **innerhalb von Outlook** auf einen anderen Ordner gezogen, kann sie
-**verschoben** statt kopiert werden. Das Original landet als Sicherheitsnetz in „Gelöschte
-Elemente" (wiederherstellbar). **Ab v1.4.1 ist das standardmäßig abgeschaltet** – siehe
-unten, warum und wie man es wieder einschaltet.
+Gemeldetes Verhalten: Man hängt einen Anhang an E-Mail 1, will danach in E-Mail 2 Text
+markieren – der Text wird nicht markiert, stattdessen hängt plötzlich der Anhang aus E-Mail 1
+an E-Mail 2. Ursache waren zwei Dinge:
 
-Die Löschung der Quell-Mail erfolgt **nur**, wenn der Drop eindeutig ein interner Ordner-Move
-ist – abgesichert über mehrere Bedingungen (siehe `ExplorerWrapper.TryCompleteInternalMove`):
+1. `GetAttachmentSelection` fiel auf die **jeweils andere Quelle** zurück. Fand sich im
+   angeklickten Fenster keine Anhang-Auswahl, wurde die des Lesebereichs bzw. eines anderen
+   geöffneten Fensters genommen – ein Anhang aus einem fremden Fenster also.
+2. Es wurde gar nicht geprüft, **worauf** der Zeiger zeigt. Jedes Ziehen außerhalb der
+   Nachrichtenliste wurde zum Anhang-Drag, sobald Outlook irgendwo eine Anhang-Auswahl
+   meldete – auch mitten im Fließtext.
+
+Beides ist behoben. Die Auswahl wird nur noch aus dem Fenster geholt, in dem der Klick begann,
+und der Drag startet nur, wenn unter dem Mauszeiger tatsächlich einer der markierten Anhänge
+liegt. Geprüft wird das über die Barrierefreiheits-Schnittstelle (`AccessibleObjectFromPoint`)
+samt übergeordneter Elemente – nötig, weil Anhangbereich und Nachrichtentext im **selben**
+Fenster liegen (beide Fensterklasse `_WwG`), sich über die Fensterklasse also nicht
+unterscheiden lassen. Lehnt das Add-in ab, macht Outlook wie gewohnt seinen eigenen Drag; im
+Log steht eine Zeile `Anhang-Drag NICHT gestartet: …`.
+
+Zusätzlich startet ein Drag jetzt nur noch, wenn die **Maustaste wirklich gedrückt** ist. Der
+thread-lokale Hook verpasst gelegentlich ein `WM_LBUTTONUP`; danach löste die nächste
+Mausbewegung einen „Phantom-Drag" mit der gesamten aktuellen Auswahl aus.
+
+### Verschieben innerhalb Outlook (v1.3.0, abgesichert ab v1.5.0)
+
+Wird eine E-Mail **innerhalb von Outlook** auf einen anderen Ordner gezogen, wird sie
+**verschoben** statt kopiert. Technisch importiert Outlook die abgelegte `.msg` als **neues**
+Element; das Original muss deshalb vom Add-in entfernt werden.
+
+Der Drop muss dafür erkennbar ein interner Ordner-Move sein
+(`ExplorerWrapper.TryCompleteInternalMove`):
 
 - kein Strg gehalten (Strg = weiterhin kopieren),
 - das Ziel-Fenster gehört zum **Outlook-Prozess selbst** (der ABAS-Client ist ein anderer
@@ -178,37 +203,65 @@ ist – abgesichert über mehrere Bedingungen (siehe `ExplorerWrapper.TryComplet
   eine als **Anhang** in eine neue Mail gezogene E-Mail **nicht** gelöscht wird,
 - das Ziel ist nicht die Nachrichtenliste selbst.
 
-Trifft eine Bedingung nicht zu, bleibt es beim bisherigen Verhalten (Kopie) – **kein Datenverlust
-im Zweifelsfall.**
+#### Ankunftsnachweis statt Vertrauen (ab v1.5.0)
 
-#### Kein Rest im Papierkorb (ab v1.4.2)
+Die vier Bedingungen oben beschreiben nur die **Geometrie** des Drops. Sie sagen nichts
+darüber, ob Outlook die `.msg` auch tatsächlich irgendwo importiert hat. Bis v1.4.2 wurde
+allein daraufhin gelöscht – ein Drop, der nichts importiert, entfernte die Mail ersatzlos.
 
-Outlook importiert beim internen Drop die abgelegte `.msg` als **neues** Element; das Original
-muss deshalb entfernt werden. Bis v1.4.1 landete es in „Gelöschte Elemente" und lag damit
-doppelt im Postfach. **Ab v1.4.2 wird die Quell-Mail endgültig entfernt** – im Papierkorb
-bleibt nichts liegen.
+Ab v1.5.0 gilt: **erst suchen, dann löschen.** `DragDropHandler.ScheduleVerifiedMove` entfernt
+ein Quell-Element nur, wenn im Postfach eine Kopie existiert, die
 
-Abgesichert über einen Nachweis (`DragDropHandler.SchedulePermanentPurge`): Endgültig gelöscht
-wird **nur**, wenn dieselbe Mail – identifiziert über `PR_INTERNET_MESSAGE_ID` – nachweislich
-noch woanders im selben Postfach liegt, also im Zielordner angekommen ist. Ohne diesen Nachweis
-bleibt sie im Papierkorb liegen (Verhalten wie v1.3.0). Das gilt auch, wenn die Mail keine
-Message-ID hat oder das Postfach zu viele Ordner für die Suche hat (Budget: 150 Ordner).
+1. **außerhalb des Quellordners** liegt,
+2. **dieselbe Identität** hat – `PR_INTERNET_MESSAGE_ID`, und wenn die fehlt (bei IMAP-Konten
+   regelmäßig der Fall) Betreff + Empfangszeit + Absender,
+3. **neu** ist, also nach dem Beginn dieses Drags angelegt wurde.
 
-Der Nachweis läuft 2 Sekunden nach dem Drop, weil Outlook den Import erst abschließen muss.
+Punkt 3 ist der entscheidende: Ohne ihn gilt jede alte Kopie derselben Mail – etwa in
+„Gesendete Elemente" oder im Archiv – als Nachweis, und die Quell-Mail wäre weg, obwohl der
+Drop nichts bewirkt hat. Gesucht wird in **allen** eingebundenen Postfächern (Ordner-Budget
+120), damit auch ein Drop in ein anderes Konto erkannt wird. Findet sich kein Nachweis, bleibt
+das Original erhalten – dann liegt die Mail eben doppelt, aber nichts ist verloren.
 
-Wer das Verschieben ganz abschalten will (interner Drop kopiert dann wieder, Quell-Mail bleibt
-erhalten – Verhalten wie bis v1.2.0):
+Die Prüfung läuft verzögert, weil Outlook den Import erst abschließen muss. Sie kostet im
+Normalfall wenige Millisekunden (gemessen: 25 ms für ein Element), weil beim ersten Treffer
+abgebrochen wird.
+
+#### Schadensbegrenzung: Mengengrenze
+
+Ein einzelner Drop darf höchstens **25** Quell-Elemente entfernen (`MaxAutoDelete`). Wird die
+Grenze überschritten – etwa weil versehentlich mit Strg+A alles markiert war – bleibt
+**nichts** gelöscht; im Log steht eine `SICHERHEIT:`-Zeile. Die Kopien im Zielordner liegen
+dann doppelt vor, aber der Posteingang ist unversehrt.
+
+#### Papierkorb
+
+**Ab v1.5.0 bleibt die Quell-Mail in „Gelöschte Elemente" liegen** (wiederherstellbar). In
+v1.4.2 wurde sie endgültig entfernt; damit war jedes Fehlverhalten unwiderruflich. Wer das
+alte Verhalten will, setzt `PurgeFromTrash=1` – dann wird die Mail in den Papierkorb
+**verschoben** und dort gelöscht (kein Suchen über die Message-ID mehr nötig, das lief bei
+IMAP-Konten ohnehin ins Leere). Hat das Postfach keinen Papierkorb – typisch für IMAP –
+bleibt es beim normalen Löschen.
+
+#### Einstellungen
 
 ```cmd
-:: pro Benutzer
-reg add "HKCU\Software\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 0 /f
+:: pro Benutzer (HKCU sticht HKLM)
+reg add "HKCU\Software\ABAS Outlook Addin" /v InternalMove   /t REG_DWORD /d 0  /f
+reg add "HKCU\Software\ABAS Outlook Addin" /v MaxAutoDelete  /t REG_DWORD /d 25 /f
+reg add "HKCU\Software\ABAS Outlook Addin" /v PurgeFromTrash /t REG_DWORD /d 0  /f
 
 :: oder unternehmensweit
 reg add "HKLM\SOFTWARE\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 0 /f
 ```
 
-`1` oder kein Eintrag = Verschieben aktiv (Standard). HKCU sticht HKLM. Die Einstellung wird
-beim Start von Outlook gelesen und im Log protokolliert.
+| Wert | Standard | Bedeutung |
+|------|----------|-----------|
+| `InternalMove`   | 1  | 1 = interner Drop verschiebt, 0 = kopiert (Quell-Mail bleibt immer) |
+| `MaxAutoDelete`  | 25 | Obergrenze automatisch entfernter Quell-Elemente pro Drop; 0 = nie löschen |
+| `PurgeFromTrash` | 0  | 1 = Quell-Mail endgültig aus dem Papierkorb entfernen |
+
+Alle Werte werden beim Start bzw. bei der ersten Verwendung gelesen und im Log protokolliert.
 
 > **Hinweis:** Das Add-in hat **keine sichtbare Oberfläche** (kein Menüband-Button, kein Symbol).
 > Es arbeitet unsichtbar im Hintergrund und reagiert nur auf das Ziehen mit der Maus.

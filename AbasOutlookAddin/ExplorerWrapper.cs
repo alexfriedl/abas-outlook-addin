@@ -127,6 +127,9 @@ namespace AbasOutlookAddin
         [DllImport("user32.dll")]
         private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
 
+        [DllImport("user32.dll")]
+        private static extern short GetAsyncKeyState(int vKey);
+
         private const uint GA_ROOT = 2;
 
         // POSITIVLISTE: ABAS-Drag wird AUSSCHLIESSLICH gestartet, wenn der Klick in der
@@ -146,6 +149,83 @@ namespace AbasOutlookAddin
                 if (string.Equals(cls, allowed, StringComparison.OrdinalIgnoreCase))
                     return true;
             return false;
+        }
+
+        [DllImport("oleacc.dll")]
+        private static extern int AccessibleObjectFromPoint(POINT pt,
+            [MarshalAs(UnmanagedType.Interface)] out Accessibility.IAccessible acc,
+            [MarshalAs(UnmanagedType.Struct)] out object child);
+
+        /// <summary>
+        /// Liest ueber die Barrierefreiheits-Schnittstelle, WAS genau unter dem Mauszeiger liegt –
+        /// das getroffene Element und seine uebergeordneten Elemente.
+        ///
+        /// Noetig, weil Anhangbereich und Nachrichtentext im selben Fenster liegen; ueber die
+        /// Fensterklasse laesst sich "Anhang" nicht von "Text" unterscheiden, ueber den
+        /// Elementnamen schon. Die Kette nach oben ist noetig, weil der direkte Treffer oft nur
+        /// ein Teilstueck ist: Auf dem Anhang-Chip liefert er "169 bytes", erst das
+        /// uebergeordnete Element heisst "Rechnung.pdf 169 bytes 1 of 1 attachments"
+        /// (real gemessen an Outlook 365).
+        /// </summary>
+        private static System.Collections.Generic.List<string> GetAccessibleNamesAt(POINT pt)
+        {
+            var names = new System.Collections.Generic.List<string>();
+            try
+            {
+                if (AccessibleObjectFromPoint(pt, out Accessibility.IAccessible acc, out object child) != 0
+                    || acc == null)
+                    return names;
+
+                try { names.Add(acc.get_accName(child)); } catch { }
+
+                object current = acc;
+                for (int level = 0; level < 4; level++)
+                {
+                    if (!(current is Accessibility.IAccessible element)) break;
+                    try { names.Add(element.get_accName(0)); } catch { }
+                    try { current = element.accParent; } catch { break; }
+                }
+            }
+            catch { }
+            return names;
+        }
+
+        /// <summary>
+        /// Taucht einer der markierten Anhaenge im Namen des Elements unter dem Zeiger (oder
+        /// eines seiner uebergeordneten Elemente) auf? Nur dann steht der Zeiger wirklich auf
+        /// einem Anhang – und nur dann darf das Add-in den Drag an sich reissen. Im Fliesstext
+        /// liefert die Kette leere Namen bzw. den Dokumentnamen und faellt hier durch.
+        /// </summary>
+        private static bool PointerIsOnAttachment(System.Collections.Generic.IList<string> accNames,
+            System.Collections.Generic.IList<Attachment> attachments)
+        {
+            if (accNames == null || accNames.Count == 0 || attachments == null || attachments.Count == 0)
+                return false;
+
+            foreach (var attachment in attachments)
+            {
+                foreach (var candidate in new[] { SafeFileName(attachment), SafeDisplayName(attachment) })
+                {
+                    if (string.IsNullOrWhiteSpace(candidate)) continue;
+                    foreach (var name in accNames)
+                    {
+                        if (string.IsNullOrWhiteSpace(name)) continue;
+                        if (name.IndexOf(candidate, StringComparison.OrdinalIgnoreCase) >= 0)
+                            return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        private static string SafeFileName(Attachment a)
+        {
+            try { return a.FileName; } catch { return null; }
+        }
+
+        private static string SafeDisplayName(Attachment a)
+        {
+            try { return a.DisplayName; } catch { return null; }
         }
 
         private static string GetWindowClass(IntPtr hwnd)
@@ -211,7 +291,12 @@ namespace AbasOutlookAddin
                             // waere davon nur noch ein Anhang uebrig (#Mehrfachauswahl).
                             ReleaseCapturedAttachments();
                             if (!IsMessageList(_downHwnd))
+                            {
+                                // Was liegt unter dem Zeiger? Wird beim Drag-Start gebraucht,
+                                // um "Anhang angeklickt" von "Text markiert" zu unterscheiden.
+                                _downAccName = string.Join(" | ", GetAccessibleNamesAt(hs.pt));   // nur fuers Log
                                 _capturedAttachments = CaptureAttachmentSelection(out _capturedSource);
+                            }
                             break;
 
                         case WM_MOUSEMOVE:
@@ -219,17 +304,25 @@ namespace AbasOutlookAddin
                             {
                                 _mouseDown = false;
 
+                                // Ohne tatsaechlich gedrueckte Maustaste gibt es keinen Drag.
+                                // Der Hook sieht nur Nachrichten des Outlook-UI-Threads; geht ein
+                                // WM_LBUTTONUP anderswo verloren (modaler Dialog, fremdes Fenster),
+                                // blieb _mouseDown bis v1.4.2 haengen. Die naechste Mausbewegung
+                                // startete dann einen "Phantom-Drag", der sofort dort fallen liess,
+                                // wo der Zeiger gerade stand – mit der GESAMTEN aktuellen Auswahl.
+                                if (!IsLeftButtonPhysicallyDown())
+                                {
+                                    Logger.Log("Drag verworfen: Maustaste ist gar nicht gedrueckt (verlorenes WM_LBUTTONUP).");
+                                    break;
+                                }
+
                                 // Element-Drag NUR aus der Nachrichtenliste (SUPERGRID).
                                 // Ausserhalb der Liste kommt ab v1.4.0 der Anhang-Drag zum Zug –
                                 // aber nur, wenn Outlook tatsaechlich markierte Anhaenge meldet.
                                 if (IsMessageList(_downHwnd))
-                                {
                                     InitiateDrag();
-                                }
                                 else
-                                {
                                     InitiateAttachmentDrag();
-                                }
                             }
                             break;
 
@@ -247,6 +340,40 @@ namespace AbasOutlookAddin
         {
             return Math.Abs(current.x - _downPoint.x) > SystemInformation.DragSize.Width ||
                    Math.Abs(current.y - _downPoint.y) > SystemInformation.DragSize.Height;
+        }
+
+        private const int VK_LBUTTON = 0x01;
+        private const int VK_RBUTTON = 0x02;
+
+        /// <summary>
+        /// Fragt den echten Zustand der Maustasten ab – unabhaengig davon, welche Nachrichten
+        /// der Hook gesehen hat. Beruecksichtigt vertauschte Maustasten (Linkshaender).
+        /// </summary>
+        private static bool IsLeftButtonPhysicallyDown()
+        {
+            int key = SystemInformation.MouseButtonsSwapped ? VK_RBUTTON : VK_LBUTTON;
+            return (GetAsyncKeyState(key) & 0x8000) != 0;
+        }
+
+        // Name des Elements, auf das geklickt wurde (Barrierefreiheits-Schnittstelle).
+        private string _downAccName;
+
+        private bool _textDragLogged;
+
+        private void LogTextDragOnce(System.Collections.Generic.IList<string> overNow, int selectedCount)
+        {
+            if (_textDragLogged) return;
+            _textDragLogged = true;
+            Logger.Log($"Anhang-Drag NICHT gestartet: der Zeiger steht nicht auf einem Anhang " +
+                       $"(unter dem Zeiger: '{string.Join(" | ", overNow)}', markiert: {selectedCount} " +
+                       $"Anhang/Anhaenge, Klasse='{GetWindowClass(_downHwnd)}'). Outlook behaelt das " +
+                       $"Ziehen – z. B. zum Markieren von Text. Wird nur einmal protokolliert.");
+        }
+
+        private static POINT CursorPoint()
+        {
+            GetCursorPos(out POINT p);
+            return p;
         }
 
         private void InitiateDrag()
@@ -270,6 +397,10 @@ namespace AbasOutlookAddin
                 // Quell-EntryIDs VOR dem Extrahieren sichern (CreateDragData gibt die COM-Refs frei).
                 // Nur damit laesst sich nach einem internen Verschieben das Original entfernen.
                 var sourceRefs = _handler.CaptureItemIds(selection);
+
+                // Startzeit merken: Nur was NACH diesem Zeitpunkt im Postfach entsteht, zaehlt
+                // spaeter als Nachweis, dass der Drop die Mail wirklich importiert hat.
+                DateTime dragStarted = DateTime.Now;
 
                 DataObject dragData;
 
@@ -301,7 +432,7 @@ namespace AbasOutlookAddin
                 Logger.Log($"Drag beendet, Ergebnis: {result}");
 
                 // Internen Outlook-Drop erkennen und ggf. als echtes Verschieben abschliessen.
-                TryCompleteInternalMove(result, ctrlHeld, sourceRefs);
+                TryCompleteInternalMove(result, ctrlHeld, sourceRefs, dragStarted);
 
                 _handler.ScheduleCleanup();
             }
@@ -323,8 +454,9 @@ namespace AbasOutlookAddin
         /// deshalb legen wir die Anhaenge selbst als Temp-Dateien ab.
         ///
         /// Gestartet wird ausschliesslich, wenn Outlook eine nicht-leere AttachmentSelection
-        /// meldet. Ist nichts markiert, verhaelt sich das Add-in wie bisher (Drag ignoriert)
-        /// und Outlook macht seinen eigenen Drag.
+        /// meldet UND der Klick nachweislich auf einem dieser Anhaenge lag. Die zweite
+        /// Bedingung ist ab v1.5.0 neu und behebt das gemeldete Phaenomen, dass beim Markieren
+        /// von Text stattdessen ein Anhang gezogen (und beim Loslassen angehaengt) wurde.
         /// </summary>
         private void InitiateAttachmentDrag()
         {
@@ -359,6 +491,24 @@ namespace AbasOutlookAddin
                 if (attachments == null || attachments.Count == 0)
                 {
                     Logger.Log($"Drag ignoriert (kein Listen-Fenster, keine Anhang-Auswahl, Klasse='{GetWindowClass(_downHwnd)}').");
+                    return;
+                }
+
+                // Der Zeiger muss JETZT auf einem der markierten Anhaenge stehen. Sonst zieht
+                // der Anwender gerade Text – und Outlook meldet die Anhang-Auswahl nur, weil
+                // vorher irgendwo ein Anhang angeklickt wurde.
+                //
+                // Bewusst die AKTUELLE Zeigerposition und nicht die beim Mausklick gemerkte:
+                // Der thread-lokale Hook verpasst gelegentlich ein WM_LBUTTONDOWN (real
+                // beobachtet beim Klick auf den Anhang-Chip). Dann zeigen _downHwnd und
+                // _downAccName noch auf die VORIGE Geste – und genau daraus entstand das
+                // gemeldete Verhalten "Text wird nicht markiert, stattdessen haengt der Anhang
+                // an der anderen Mail". Ein echter Anhang-Drag beginnt mit wenigen Pixeln
+                // Bewegung und steht dabei noch auf dem Anhang.
+                var overNow = GetAccessibleNamesAt(CursorPoint());
+                if (!PointerIsOnAttachment(overNow, attachments))
+                {
+                    LogTextDragOnce(overNow, attachments.Count);
                     return;
                 }
 
@@ -461,9 +611,15 @@ namespace AbasOutlookAddin
         }
 
         /// <summary>
-        /// Holt die markierten Anhaenge – bevorzugt aus der Quelle, in der der Drag begann:
-        /// gleiches Wurzelfenster wie der Explorer -> Lesebereich, sonst geoeffnete E-Mail
-        /// (Inspector). Die jeweils andere Quelle dient als Rueckfallebene.
+        /// Holt die markierten Anhaenge AUSSCHLIESSLICH aus dem Fenster, in dem der Klick
+        /// begann: gleiches Wurzelfenster wie der Explorer -> Lesebereich, sonst die geoeffnete
+        /// E-Mail (Inspector).
+        ///
+        /// Bis v1.4.2 gab es hier einen Rueckfall auf die jeweils ANDERE Quelle. Genau daraus
+        /// entstand das gemeldete Phaenomen: Ein Klick im Verfassen-Fenster von Mail 2 fand dort
+        /// keine Anhang-Auswahl, griff dann auf den Lesebereich (Mail 1) zurueck – und haengte
+        /// beim Ziehen den Anhang von Mail 1 an Mail 2. Ein Anhang aus einem anderen Fenster
+        /// ist nie das, was der Anwender gerade zieht.
         /// </summary>
         private AttachmentSelection GetAttachmentSelection(out string source)
         {
@@ -476,24 +632,36 @@ namespace AbasOutlookAddin
                 var fromExplorer = TryGetExplorerAttachments();
                 if (fromExplorer != null && fromExplorer.Count > 0) { source = "Lesebereich"; return fromExplorer; }
                 ReleaseIfCom(fromExplorer);
-
-                var fromInspector = TryGetInspectorAttachments();
-                if (fromInspector != null && fromInspector.Count > 0) { source = "geoeffnete E-Mail"; return fromInspector; }
-                ReleaseIfCom(fromInspector);
             }
-            else
+            else if (IsAncestorOfActiveInspector(downRoot))
             {
                 var fromInspector = TryGetInspectorAttachments();
                 if (fromInspector != null && fromInspector.Count > 0) { source = "geoeffnete E-Mail"; return fromInspector; }
                 ReleaseIfCom(fromInspector);
-
-                var fromExplorer = TryGetExplorerAttachments();
-                if (fromExplorer != null && fromExplorer.Count > 0) { source = "Lesebereich"; return fromExplorer; }
-                ReleaseIfCom(fromExplorer);
             }
 
             source = null;
             return null;
+        }
+
+        /// <summary>
+        /// Stellt sicher, dass der Klick im AKTIVEN Inspector-Fenster stattfand. Sonst wuerde
+        /// die Anhang-Auswahl eines anderen geoeffneten Fensters gezogen.
+        /// </summary>
+        private bool IsAncestorOfActiveInspector(IntPtr downRoot)
+        {
+            if (downRoot == IntPtr.Zero) return false;
+            try
+            {
+                Inspector inspector = _app?.ActiveInspector();
+                if (inspector is IOleWindow oleWindow)
+                {
+                    oleWindow.GetWindow(out IntPtr hwnd);
+                    return GetAncestor(hwnd, GA_ROOT) == downRoot;
+                }
+            }
+            catch { }
+            return false;
         }
 
         // Die Auswahl wird bei JEDEM Klick ausserhalb der Liste abgefragt – Fehler
@@ -562,10 +730,14 @@ namespace AbasOutlookAddin
         ///      raus – so wird eine als Anhang gezogene Mail NICHT geloescht (Outlook meldet fuer
         ///      Ordner-Drops und Anhang-Drops gleichermassen 'Copy', deshalb reicht der Effekt nicht),
         ///   5) das Ziel ist NICHT die Nachrichtenliste selbst (Drop zurueck auf die Liste != Verschieben).
-        /// Faellt eine Bedingung weg, bleibt es beim bisherigen Verhalten (Kopie) – kein Datenverlust.
+        ///
+        /// Diese fuenf Bedingungen beschreiben nur die GEOMETRIE des Drops – sie sagen nichts
+        /// darueber, ob Outlook die .msg auch tatsaechlich irgendwo importiert hat. Genau daran
+        /// scheiterte v1.4.2. Das eigentliche Loeschen entscheidet deshalb erst
+        /// <see cref="DragDropHandler.ScheduleVerifiedMove"/> anhand eines Ankunftsnachweises.
         /// </summary>
         private void TryCompleteInternalMove(DragDropEffects result, bool ctrlHeld,
-            System.Collections.Generic.IList<DragDropHandler.ItemRef> sourceRefs)
+            System.Collections.Generic.IList<DragDropHandler.ItemRef> sourceRefs, DateTime dragStarted)
         {
             try
             {
@@ -590,13 +762,7 @@ namespace AbasOutlookAddin
                 if (!sameMainWindow) return;                 // eigenes Fenster (z. B. Verfassen) -> Anhang, nicht verschieben
                 if (IsMessageList(targetHwnd)) return;       // zurueck auf die Nachrichtenliste -> kein Verschieben
 
-                int deleted = _handler.DeleteItemsById(sourceRefs);
-                Logger.Log($"Internes Verschieben abgeschlossen: {deleted} Quell-Element(e) entfernt.");
-
-                // Damit im Papierkorb nichts liegen bleibt: verzoegert endgueltig entfernen,
-                // aber nur mit Nachweis, dass die Mail im Zielordner angekommen ist.
-                if (deleted > 0)
-                    _handler.SchedulePermanentPurge(sourceRefs);
+                _handler.ScheduleVerifiedMove(sourceRefs, dragStarted);
             }
             catch (System.Exception ex)
             {
