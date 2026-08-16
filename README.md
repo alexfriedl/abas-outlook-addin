@@ -5,6 +5,40 @@ direkt in den **ABAS Windows-Client** – ohne API-Hooking, ohne globale Systeme
 
 ---
 
+## Was man damit machen kann
+
+Das Add-in hat genau einen Zweck: **Mails und Anhänge aus Outlook ins ABAS bekommen.** Ohne
+das Add-in geht das nicht, weil ABAS nur echte Dateien annimmt und Outlook beim Ziehen keine
+echte Datei herausgibt (technischer Hintergrund unter [Funktionsweise](#funktionsweise)).
+
+**1. Eine Mail ins ABAS ziehen**  
+Mail in der Liste anklicken, ins ABAS ziehen, fertig. Dort landet die komplette Mail als
+Datei, also mit Absender, Betreff, Text und allem, was drin hängt.
+
+**2. Mehrere Mails auf einmal ziehen**  
+Mit Strg oder Shift mehrere markieren und zusammen rüberziehen.
+
+**3. Mail plus Anhänge einzeln ablegen**  
+Beim Ziehen die **Strg-Taste** gedrückt halten. Dann kommt nicht nur die Mail an, sondern
+zusätzlich jeder Anhang als eigene Datei. Praktisch, wenn im ABAS die Rechnung als PDF
+gebraucht wird und nicht nur die Mail drumherum.
+
+**4. Nur einen einzelnen Anhang ablegen**  
+Den Anhang direkt anklicken – im Lesebereich oder in der geöffneten Mail – und von dort ins
+ABAS ziehen. Dann kommt genau diese eine Datei an, ohne die Mail drumherum.
+
+Kontakte, Termine und Aufgaben lassen sich genauso ziehen, siehe
+[Unterstützte Elemente](#unterstützte-elemente).
+
+Innerhalb von Outlook ändert sich nichts am gewohnten Verhalten: eine Mail auf einen anderen
+Ordner gezogen wird **verschoben**, nicht kopiert (siehe
+[Verschieben innerhalb Outlook](#verschieben-innerhalb-outlook-v130-abgesichert-ab-v150)).
+
+Das Add-in hat **keine Oberfläche** – kein Button, kein Symbol im Menüband. Es arbeitet
+unsichtbar mit und reagiert nur auf das Ziehen mit der Maus.
+
+---
+
 ## Funktionsweise
 
 ```
