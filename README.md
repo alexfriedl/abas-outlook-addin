@@ -11,31 +11,38 @@ Das Add-in hat genau einen Zweck: **Mails und Anhänge aus Outlook ins ABAS beko
 das Add-in geht das nicht, weil ABAS nur echte Dateien annimmt und Outlook beim Ziehen keine
 echte Datei herausgibt (technischer Hintergrund unter [Funktionsweise](#funktionsweise)).
 
+> **Ab v1.6.0 wird mit der RECHTEN Maustaste gezogen.** Die linke Maustaste gehört wieder
+> vollständig Outlook – Verschieben, Text markieren, Outlooks eigener Anhang-Drag laufen
+> unverändert, das Add-in bekommt davon gar nichts mit.
+
 **1. Eine Mail ins ABAS ziehen**  
-Mail in der Liste anklicken, ins ABAS ziehen, fertig. Dort landet die komplette Mail als
-Datei, also mit Absender, Betreff, Text und allem, was drin hängt.
+Mail in der Liste anklicken, dann mit **gedrückter rechter Maustaste** ins ABAS ziehen.
+Dort landet die komplette Mail als Datei, also mit Absender, Betreff, Text und allem, was
+drin hängt.
 
 **2. Mehrere Mails auf einmal ziehen**  
-Mit Strg oder Shift mehrere markieren und zusammen rüberziehen.
+Mit Strg oder Shift mehrere markieren und zusammen rüberziehen (ebenfalls rechte Taste).
 
 **3. Mail plus Anhänge einzeln ablegen**  
-Beim Ziehen die **Strg-Taste** gedrückt halten. Dann kommt nicht nur die Mail an, sondern
-zusätzlich jeder Anhang als eigene Datei. Praktisch, wenn im ABAS die Rechnung als PDF
-gebraucht wird und nicht nur die Mail drumherum.
+Beim Ziehen zusätzlich die **Strg-Taste** gedrückt halten. Dann kommt nicht nur die Mail an,
+sondern zusätzlich jeder Anhang als eigene Datei. Praktisch, wenn im ABAS die Rechnung als
+PDF gebraucht wird und nicht nur die Mail drumherum.
 
 **4. Nur einen einzelnen Anhang ablegen**  
-Den Anhang direkt anklicken – im Lesebereich oder in der geöffneten Mail – und von dort ins
-ABAS ziehen. Dann kommt genau diese eine Datei an, ohne die Mail drumherum.
+Den Anhang direkt anklicken – im Lesebereich oder in der geöffneten Mail – und von dort mit
+der rechten Maustaste ins ABAS ziehen. Dann kommt genau diese eine Datei an, ohne die Mail
+drumherum.
 
 Kontakte, Termine und Aufgaben lassen sich genauso ziehen, siehe
 [Unterstützte Elemente](#unterstützte-elemente).
 
-Innerhalb von Outlook ändert sich nichts am gewohnten Verhalten: eine Mail auf einen anderen
-Ordner gezogen wird **verschoben**, nicht kopiert (siehe
-[Verschieben innerhalb Outlook](#verschieben-innerhalb-outlook-v130-abgesichert-ab-v150)).
+Innerhalb von Outlook ändert sich nichts: Eine Mail mit der **linken** Maustaste auf einen
+anderen Ordner gezogen wird von Outlook selbst verschoben (siehe
+[Verschieben innerhalb Outlook](#verschieben-innerhalb-outlook-ab-v160-wieder-outlook-selbst)).
+Ein **Rechtsklick ohne Ziehen** öffnet wie gewohnt das Kontextmenü.
 
 Das Add-in hat **keine Oberfläche** – kein Button, kein Symbol im Menüband. Es arbeitet
-unsichtbar mit und reagiert nur auf das Ziehen mit der Maus.
+unsichtbar mit und reagiert nur auf das Ziehen mit der rechten Maustaste.
 
 ---
 
@@ -45,7 +52,8 @@ unsichtbar mit und reagiert nur auf das Ziehen mit der Maus.
 Outlook (Selektion)
       │
       ▼
-  Maus-Drag erkannt (thread-lokaler WH_MOUSE-Hook auf dem Outlook-UI-Thread)
+  Drag mit der RECHTEN Maustaste erkannt (thread-lokaler WH_MOUSE-Hook,
+  WM_RBUTTONDOWN/-UP; die linke Taste wird nicht angefasst)
       │
       ▼
   Element als Datei extrahiert (temp, benutzerspezifisch)
@@ -54,7 +62,8 @@ Outlook (Selektion)
   Standard Windows CF_HDROP DataObject erstellt
       │
       ▼
-  OLE DoDragDrop() → ABAS empfängt echte Dateipfade
+  OLE DoDragDrop() mit eigenem QueryContinueDrag an der rechten Taste
+  → ABAS empfängt echte Dateipfade
       │
       ▼
   Temp-Dateien nach 30s sicher gelöscht
@@ -164,13 +173,18 @@ msiexec.exe /i AbasOutlookAddin.msi /qn
 ## Verwendung
 
 1. Outlook öffnen
-2. E-Mail oder Element in der Liste anklicken und **gedrückt halten**
-3. Standardmäßig wird die E-Mail als **`.msg`** abgelegt (die Anhänge sind darin enthalten).
-4. Zum **zusätzlichen** Ablegen aller Anhänge als separate Dateien: beim Losziehen die
+2. E-Mail oder Element in der Liste anklicken (linke Taste, wie immer)
+3. Mit der **rechten Maustaste** darauf drücken, gedrückt halten und losziehen
+4. Standardmäßig wird die E-Mail als **`.msg`** abgelegt (die Anhänge sind darin enthalten).
+5. Zum **zusätzlichen** Ablegen aller Anhänge als separate Dateien: beim Losziehen die
    **Strg-Taste** gedrückt halten (passend zur Windows-Konvention „Strg+Ziehen = Kopieren").
    Es wird dann `.msg` **+** alle Anhänge abgelegt. Signatur-Logos und andere im Text
    eingebettete Bilder werden dabei **nicht** mit abgelegt (ab v1.4.0).
-5. In das ABAS-Fenster ziehen und loslassen ✓
+6. In das ABAS-Fenster ziehen und loslassen ✓
+
+> Wird die rechte Maustaste nur **geklickt**, ohne den Zeiger zu bewegen, passiert nichts
+> Besonderes – Outlook öffnet sein Kontextmenü. Das Add-in wird erst aktiv, wenn bei
+> gedrückter rechter Taste die Ziehen-Schwelle von Windows überschritten wird.
 
 ### Anhänge direkt ins DMS ziehen (ab v1.4.0)
 
@@ -179,7 +193,7 @@ Ein **einzelner Anhang** lässt sich jetzt direkt aus der E-Mail ins ABAS ziehen
 
 1. Anhang im **Lesebereich** oder in der **geöffneten E-Mail** anklicken (Mehrfachauswahl mit
    Strg/Shift möglich)
-2. Von dort aus ins ABAS-Fenster ziehen ✓
+2. Von dort aus mit der **rechten Maustaste** ins ABAS-Fenster ziehen ✓
 
 Hintergrund: Outlooks eigener Anhang-Drag liefert *virtuelle* Dateien
 (`FileGroupDescriptor`/`FileContents`). Der ABAS-Client nimmt aber nur echte Dateipfade
@@ -217,88 +231,33 @@ unterscheiden lassen. Lehnt das Add-in ab, macht Outlook wie gewohnt seinen eige
 Log steht eine Zeile `Anhang-Drag NICHT gestartet: …`.
 
 Zusätzlich startet ein Drag jetzt nur noch, wenn die **Maustaste wirklich gedrückt** ist. Der
-thread-lokale Hook verpasst gelegentlich ein `WM_LBUTTONUP`; danach löste die nächste
+thread-lokale Hook verpasst gelegentlich ein `WM_RBUTTONUP`; danach löste die nächste
 Mausbewegung einen „Phantom-Drag" mit der gesamten aktuellen Auswahl aus.
 
-### Verschieben innerhalb Outlook (v1.3.0, abgesichert ab v1.5.0)
+### Verschieben innerhalb Outlook (ab v1.6.0 wieder Outlook selbst)
 
-Wird eine E-Mail **innerhalb von Outlook** auf einen anderen Ordner gezogen, wird sie
-**verschoben** statt kopiert. Technisch importiert Outlook die abgelegte `.msg` als **neues**
-Element; das Original muss deshalb vom Add-in entfernt werden.
+**Das Add-in fasst das Verschieben nicht mehr an.** Wer eine Mail mit der **linken**
+Maustaste auf einen anderen Ordner zieht, löst Outlooks eigenes Verschieben aus – genau
+wie ohne Add-in, ohne Umweg über eine `.msg` und ohne Verzögerung.
 
-Der Drop muss dafür erkennbar ein interner Ordner-Move sein
-(`ExplorerWrapper.TryCompleteInternalMove`):
+Damit ist auch die gesamte Löschmechanik entfallen, die es von v1.3.0 bis v1.5.0 gab:
+Das Add-in legte die Mail als `.msg` ab, Outlook importierte sie als **neues** Element, und
+das Original musste anschließend entfernt werden. Das brachte zwei Fehlerbilder mit sich:
 
-- kein Strg gehalten (Strg = weiterhin kopieren),
-- das Ziel-Fenster gehört zum **Outlook-Prozess selbst** (der ABAS-Client ist ein anderer
-  Prozess und kann so **nie** ein Löschen auslösen),
-- der Drop landete im **Outlook-Hauptfenster** (gleiches Wurzelfenster wie der Explorer) –
-  ein Verfassen-/Inspector-Fenster ist ein eigenes Top-Level-Fenster und fällt heraus, sodass
-  eine als **Anhang** in eine neue Mail gezogene E-Mail **nicht** gelöscht wird,
-- das Ziel ist nicht die Nachrichtenliste selbst.
+- **Kopie statt Verschieben.** Der Maus-Hook ist thread-lokal und griff in *allen*
+  Outlook-Fenstern, die Abschlussprüfung verglich den Drop aber gegen das *eine* beim Laden
+  gebundene Explorer-Fenster. Mit einem zweiten geöffneten Fenster wurde das Ziehen also
+  übernommen, der Abschluss aber verworfen – die Mail lag danach doppelt vor.
+- **Unbegrenzte Verzögerung.** Das Entfernen des Originals lief verzögert über Outlooks
+  UI-Thread (`BeginInvoke`). War der beschäftigt, wartete die Arbeit: gemessen 33 Sekunden
+  bis mehrere Minuten statt der geplanten 2,5 Sekunden.
 
-#### Ankunftsnachweis statt Vertrauen (ab v1.5.0)
-
-Die vier Bedingungen oben beschreiben nur die **Geometrie** des Drops. Sie sagen nichts
-darüber, ob Outlook die `.msg` auch tatsächlich irgendwo importiert hat. Bis v1.4.2 wurde
-allein daraufhin gelöscht – ein Drop, der nichts importiert, entfernte die Mail ersatzlos.
-
-Ab v1.5.0 gilt: **erst suchen, dann löschen.** `DragDropHandler.ScheduleVerifiedMove` entfernt
-ein Quell-Element nur, wenn im Postfach eine Kopie existiert, die
-
-1. **außerhalb des Quellordners** liegt,
-2. **dieselbe Identität** hat – `PR_INTERNET_MESSAGE_ID`, und wenn die fehlt (bei IMAP-Konten
-   regelmäßig der Fall) Betreff + Empfangszeit + Absender,
-3. **neu** ist, also nach dem Beginn dieses Drags angelegt wurde.
-
-Punkt 3 ist der entscheidende: Ohne ihn gilt jede alte Kopie derselben Mail – etwa in
-„Gesendete Elemente" oder im Archiv – als Nachweis, und die Quell-Mail wäre weg, obwohl der
-Drop nichts bewirkt hat. Gesucht wird in **allen** eingebundenen Postfächern (Ordner-Budget
-120), damit auch ein Drop in ein anderes Konto erkannt wird. Findet sich kein Nachweis, bleibt
-das Original erhalten – dann liegt die Mail eben doppelt, aber nichts ist verloren.
-
-Die Prüfung läuft verzögert, weil Outlook den Import erst abschließen muss. Sie kostet im
-Normalfall wenige Millisekunden (gemessen: 25 ms für ein Element), weil beim ersten Treffer
-abgebrochen wird.
-
-#### Schadensbegrenzung: Mengengrenze
-
-Ein einzelner Drop darf höchstens **25** Quell-Elemente entfernen (`MaxAutoDelete`). Wird die
-Grenze überschritten – etwa weil versehentlich mit Strg+A alles markiert war – bleibt
-**nichts** gelöscht; im Log steht eine `SICHERHEIT:`-Zeile. Die Kopien im Zielordner liegen
-dann doppelt vor, aber der Posteingang ist unversehrt.
-
-#### Papierkorb
-
-**Ab v1.5.0 bleibt die Quell-Mail in „Gelöschte Elemente" liegen** (wiederherstellbar). In
-v1.4.2 wurde sie endgültig entfernt; damit war jedes Fehlverhalten unwiderruflich. Wer das
-alte Verhalten will, setzt `PurgeFromTrash=1` – dann wird die Mail in den Papierkorb
-**verschoben** und dort gelöscht (kein Suchen über die Message-ID mehr nötig, das lief bei
-IMAP-Konten ohnehin ins Leere). Hat das Postfach keinen Papierkorb – typisch für IMAP –
-bleibt es beim normalen Löschen.
-
-#### Einstellungen
-
-```cmd
-:: pro Benutzer (HKCU sticht HKLM)
-reg add "HKCU\Software\ABAS Outlook Addin" /v InternalMove   /t REG_DWORD /d 0  /f
-reg add "HKCU\Software\ABAS Outlook Addin" /v MaxAutoDelete  /t REG_DWORD /d 25 /f
-reg add "HKCU\Software\ABAS Outlook Addin" /v PurgeFromTrash /t REG_DWORD /d 0  /f
-
-:: oder unternehmensweit
-reg add "HKLM\SOFTWARE\ABAS Outlook Addin" /v InternalMove /t REG_DWORD /d 0 /f
-```
-
-| Wert | Standard | Bedeutung |
-|------|----------|-----------|
-| `InternalMove`   | 1  | 1 = interner Drop verschiebt, 0 = kopiert (Quell-Mail bleibt immer) |
-| `MaxAutoDelete`  | 25 | Obergrenze automatisch entfernter Quell-Elemente pro Drop; 0 = nie löschen |
-| `PurgeFromTrash` | 0  | 1 = Quell-Mail endgültig aus dem Papierkorb entfernen |
-
-Alle Werte werden beim Start bzw. bei der ersten Verwendung gelesen und im Log protokolliert.
+**Das Add-in entfernt ab v1.6.0 unter keinen Umständen mehr ein Element.** Die Einstellungen
+`InternalMove`, `MaxAutoDelete` und `PurgeFromTrash` sind damit ersatzlos entfallen – ebenso
+der Registry-Schlüssel `Software\ABAS Outlook Addin`, den das Add-in nicht mehr liest.
 
 > **Hinweis:** Das Add-in hat **keine sichtbare Oberfläche** (kein Menüband-Button, kein Symbol).
-> Es arbeitet unsichtbar im Hintergrund und reagiert nur auf das Ziehen mit der Maus.
+> Es arbeitet unsichtbar im Hintergrund und reagiert nur auf das Ziehen mit der **rechten** Maustaste.
 
 ---
 
@@ -310,11 +269,13 @@ Da es keine sichtbare UI gibt, lässt sich der Status so kontrollieren:
    **COM-Add-Ins** auswählen → *Gehe zu…*. Der Eintrag **„ABAS Drag & Drop"** muss
    **angehakt** sein. Steht er unter *Deaktivierte Anwendungs-Add-Ins*, wieder aktivieren.
 2. **Log-Datei** (sicherster Nachweis): `%LOCALAPPDATA%\AbasOutlookAddin\Logs\addin_JJJJMMTT.log`.
-   Beim Start steht dort `ABAS Outlook Add-in erfolgreich geladen.` und
+   Beim Start steht dort `ABAS Outlook Add-in erfolgreich geladen (Ziehen mit der RECHTEN
+   Maustaste; die linke bleibt bei Outlook).` und
    `Maus-Ueberwachung installiert`. Bei einem Drag erscheint `Drag gestartet mit N Element(e)`,
    beim Ziehen eines Anhangs `Anhang-Drag gestartet mit N Anhang/Anhaengen`.
 3. **Funktionstest ohne ABAS:** `Test\AbasDropTest.exe` starten (akzeptiert nur echte
-   Dateipfade/CF_HDROP) und eine E-Mail hineinziehen – erscheint der Dateipfad, funktioniert alles.
+   Dateipfade/CF_HDROP) und eine E-Mail mit der rechten Maustaste hineinziehen – erscheint
+   der Dateipfad, funktioniert alles.
 
 ---
 
