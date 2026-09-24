@@ -77,9 +77,13 @@ namespace AbasOutlookAddin
     {
         private const int WH_MOUSE = 7;
         private const int HC_ACTION = 0;
-        private const int WM_LBUTTONDOWN = 0x0201;
         private const int WM_MOUSEMOVE = 0x0200;
-        private const int WM_LBUTTONUP = 0x0202;
+
+        // Ab v1.6.0 haengt das Add-in an der RECHTEN Maustaste. Die linke bleibt komplett
+        // bei Outlook: Verschieben, Text markieren und Outlooks eigener Anhang-Drag laufen
+        // damit wieder unveraendert und ohne jede Verzoegerung.
+        private const int WM_RBUTTONDOWN = 0x0204;
+        private const int WM_RBUTTONUP = 0x0205;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct POINT { public int x; public int y; }
@@ -246,6 +250,7 @@ namespace AbasOutlookAddin
         private POINT _downPoint;
         private IntPtr _downHwnd;      // Fenster, über dem die Maustaste gedrückt wurde
         private bool _dragInProgress; // Reentrancy-Schutz (#6)
+        private bool _suppressNextRButtonUp; // siehe HookCallback: Kontextmenue nach Drag unterdruecken
         private bool _disposed;
 
         // Beim Mausklick gesicherte Anhang-Auswahl (siehe WM_LBUTTONDOWN).
@@ -275,12 +280,33 @@ namespace AbasOutlookAddin
             if (nCode == HC_ACTION && !_dragInProgress)
             {
                 int msg = wParam.ToInt32();
-                if (msg == WM_LBUTTONDOWN || msg == WM_MOUSEMOVE || msg == WM_LBUTTONUP)
+
+                // Nach einem Rechts-Drag ein NACHHAENGENDES WM_RBUTTONUP schlucken. Sonst bekommt
+                // Outlook ein Loslassen ohne vorheriges Druecken und oeffnet das Kontextmenue
+                // dort, wo der Drag geendet hat.
+                //
+                // Wichtig ist die Bedingung "ohne vorheriges Druecken": Die OLE-Drag-Schleife
+                // verarbeitet das Loslassen meist selbst, sodass nach dem Drag gar kein
+                // WM_RBUTTONUP mehr beim Hook ankommt. Wuerde das Flag einfach stehen bleiben,
+                // verschluckte es das Loslassen des NAECHSTEN, voellig normalen Rechtsklicks –
+                // der Anwender bekaeme dann kein Kontextmenue mehr (real im Pruefstand
+                // beobachtet). Deshalb raeumt jedes neue WM_RBUTTONDOWN das Flag weg.
+                if (msg == WM_RBUTTONUP && _suppressNextRButtonUp)
+                {
+                    _suppressNextRButtonUp = false;
+                    return (IntPtr)1;
+                }
+
+                if (msg == WM_RBUTTONDOWN || msg == WM_MOUSEMOVE || msg == WM_RBUTTONUP)
                 {
                     var hs = (MOUSEHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MOUSEHOOKSTRUCT));
                     switch (msg)
                     {
-                        case WM_LBUTTONDOWN:
+                        case WM_RBUTTONDOWN:
+                            // Neue Geste -> ein evtl. noch gesetztes Flag aus dem vorigen Drag
+                            // verfaellt hier, damit dieser Klick sein Kontextmenue bekommt.
+                            _suppressNextRButtonUp = false;
+
                             _mouseDown = true;
                             _downPoint = hs.pt;
                             _downHwnd = hs.hwnd;   // Fenster unter dem Cursor merken
@@ -301,13 +327,13 @@ namespace AbasOutlookAddin
 
                                 // Ohne tatsaechlich gedrueckte Maustaste gibt es keinen Drag.
                                 // Der Hook sieht nur Nachrichten des Outlook-UI-Threads; geht ein
-                                // WM_LBUTTONUP anderswo verloren (modaler Dialog, fremdes Fenster),
+                                // WM_RBUTTONUP anderswo verloren (modaler Dialog, fremdes Fenster),
                                 // blieb _mouseDown bis v1.4.2 haengen. Die naechste Mausbewegung
                                 // startete dann einen "Phantom-Drag", der sofort dort fallen liess,
                                 // wo der Zeiger gerade stand – mit der GESAMTEN aktuellen Auswahl.
-                                if (!IsLeftButtonPhysicallyDown())
+                                if (!IsDragButtonPhysicallyDown())
                                 {
-                                    Logger.Log("Drag verworfen: Maustaste ist gar nicht gedrueckt (verlorenes WM_LBUTTONUP).");
+                                    Logger.Log("Drag verworfen: Maustaste ist gar nicht gedrueckt (verlorenes WM_RBUTTONUP).");
                                     break;
                                 }
 
@@ -321,7 +347,7 @@ namespace AbasOutlookAddin
                             }
                             break;
 
-                        case WM_LBUTTONUP:
+                        case WM_RBUTTONUP:
                             _mouseDown = false;
                             break;
                     }
@@ -341,12 +367,15 @@ namespace AbasOutlookAddin
         private const int VK_RBUTTON = 0x02;
 
         /// <summary>
-        /// Fragt den echten Zustand der Maustasten ab – unabhaengig davon, welche Nachrichten
-        /// der Hook gesehen hat. Beruecksichtigt vertauschte Maustasten (Linkshaender).
+        /// Fragt den echten Zustand der Ziehen-Taste (ab v1.6.0 die RECHTE) ab – unabhaengig
+        /// davon, welche Nachrichten der Hook gesehen hat.
+        ///
+        /// Bei vertauschten Maustasten (Linkshaender) liefert Windows die logisch rechte Taste
+        /// als VK_LBUTTON, deshalb die Umkehrung.
         /// </summary>
-        private static bool IsLeftButtonPhysicallyDown()
+        private static bool IsDragButtonPhysicallyDown()
         {
-            int key = SystemInformation.MouseButtonsSwapped ? VK_RBUTTON : VK_LBUTTON;
+            int key = SystemInformation.MouseButtonsSwapped ? VK_LBUTTON : VK_RBUTTON;
             return (GetAsyncKeyState(key) & 0x8000) != 0;
         }
 
@@ -368,6 +397,36 @@ namespace AbasOutlookAddin
             return p;
         }
 
+        /// <summary>
+        /// Fuehrt den OLE-Drag aus und haelt ihn an der RECHTEN Maustaste.
+        ///
+        /// Noetig, weil WinForms' eingebaute IDropSource-Implementierung nur die LINKE Taste
+        /// kennt: Sie meldet "fallen lassen", sobald kein linker Knopf mehr gedrueckt ist – bei
+        /// einem Rechts-Drag also sofort beim ersten Aufruf, noch bevor der Zeiger das Ziel
+        /// erreicht. Der eigene QueryContinueDrag-Handler ersetzt diese Entscheidung: weiter-
+        /// ziehen solange die Ziehen-Taste haelt, fallen lassen beim Loslassen, Esc bricht ab.
+        ///
+        /// Ausserdem wird hier gemerkt, dass das folgende WM_RBUTTONUP zu diesem Drag gehoert
+        /// und nicht als Kontextmenue-Klick durchgereicht werden darf (siehe HookCallback).
+        /// </summary>
+        private DragDropEffects PerformDrag(DataObject dragData)
+        {
+            _suppressNextRButtonUp = true;
+            using (var dragSource = new Control())
+            {
+                dragSource.QueryContinueDrag += (sender, e) =>
+                {
+                    if (e.EscapePressed)
+                    {
+                        e.Action = DragAction.Cancel;
+                        return;
+                    }
+                    e.Action = IsDragButtonPhysicallyDown() ? DragAction.Continue : DragAction.Drop;
+                };
+                return dragSource.DoDragDrop(dragData, DragDropEffects.Copy);
+            }
+        }
+
         private void InitiateDrag()
         {
             if (_dragInProgress) return;
@@ -381,18 +440,9 @@ namespace AbasOutlookAddin
 
                 Logger.Log($"Drag gestartet mit {selection.Count} Element(e)");
 
-                // Strg-Zustand einmalig festhalten: dient sowohl der Anhang-Option als auch
-                // (per Windows-Konvention "Strg = Kopieren") als Signal, dass ein interner
-                // Outlook-Drop NICHT als Verschieben gewertet werden soll.
+                // Strg-Zustand einmalig festhalten: steuert, ob zusaetzlich zur .msg auch die
+                // Anhaenge als eigene Dateien abgelegt werden.
                 bool ctrlHeld = (Control.ModifierKeys & Keys.Control) == Keys.Control;
-
-                // Quell-EntryIDs VOR dem Extrahieren sichern (CreateDragData gibt die COM-Refs frei).
-                // Nur damit laesst sich nach einem internen Verschieben das Original entfernen.
-                var sourceRefs = _handler.CaptureItemIds(selection);
-
-                // Startzeit merken: Nur was NACH diesem Zeitpunkt im Postfach entsteht, zaehlt
-                // spaeter als Nachweis, dass der Drop die Mail wirklich importiert hat.
-                DateTime dragStarted = DateTime.Now;
 
                 DataObject dragData;
 
@@ -412,20 +462,14 @@ namespace AbasOutlookAddin
 
                 if (dragData == null) return;
 
-                // OLE Drag & Drop mit Copy (ABAS empfaengt CF_HDROP). Ein interner Outlook-Drop
-                // meldet ebenfalls Copy; ob daraus ein Verschieben wird, entscheidet danach
-                // TryCompleteInternalMove anhand des Ziel-Fensters (nicht anhand des Effekts).
-                DragDropEffects result;
-                using (var dragSource = new Control())
-                {
-                    result = dragSource.DoDragDrop(dragData, DragDropEffects.Copy);
-                }
+                // OLE Drag & Drop mit Copy (ABAS empfaengt CF_HDROP).
+                DragDropEffects result = PerformDrag(dragData);
 
                 Logger.Log($"Drag beendet, Ergebnis: {result}");
 
-                // Internen Outlook-Drop erkennen und ggf. als echtes Verschieben abschliessen.
-                TryCompleteInternalMove(result, ctrlHeld, sourceRefs, dragStarted);
-
+                // Ab v1.6.0 wird NIE ein Quell-Element entfernt. Das Verschieben innerhalb
+                // Outlooks macht wieder Outlook selbst – per linker Maustaste, an die das
+                // Add-in gar nicht mehr herangeht.
                 _handler.ScheduleCleanup();
             }
             catch (System.Exception ex)
@@ -525,16 +569,11 @@ namespace AbasOutlookAddin
                     return;
                 }
 
-                DragDropEffects result;
-                using (var dragSource = new Control())
-                {
-                    result = dragSource.DoDragDrop(dragData, DragDropEffects.Copy);
-                }
+                DragDropEffects result = PerformDrag(dragData);
 
                 Logger.Log($"Anhang-Drag beendet, Ergebnis: {result}");
 
-                // Bewusst KEIN TryCompleteInternalMove: Anhaenge werden nie aus der
-                // Quell-Mail entfernt, egal wohin sie gezogen werden.
+                // Anhaenge werden nie aus der Quell-Mail entfernt, egal wohin sie gezogen werden.
                 _handler.ScheduleCleanup();
             }
             catch (System.Exception ex)
@@ -710,58 +749,6 @@ namespace AbasOutlookAddin
             catch { }
         }
 
-        /// <summary>
-        /// Schliesst einen internen Outlook-Drop als echtes Verschieben ab.
-        /// Entfernt die Quell-Elemente NUR, wenn alle Sicherheitsbedingungen erfuellt sind:
-        ///   1) kein Strg (Strg = Kopieren),
-        ///   2) der Drop wurde angenommen (Ergebnis != None),
-        ///   3) das Ziel-Fenster gehoert zu Outlook selbst (gleiche Prozess-ID; ABAS ist ein
-        ///      anderer Prozess und kann so NIE ein Loeschen ausloesen),
-        ///   4) der Drop landete im Outlook-HAUPTFENSTER (gleiches Wurzelfenster wie der Explorer).
-        ///      Ein Verfassen-/Inspector-Fenster ist ein eigenes Top-Level-Fenster und faellt damit
-        ///      raus – so wird eine als Anhang gezogene Mail NICHT geloescht (Outlook meldet fuer
-        ///      Ordner-Drops und Anhang-Drops gleichermassen 'Copy', deshalb reicht der Effekt nicht),
-        ///   5) das Ziel ist NICHT die Nachrichtenliste selbst (Drop zurueck auf die Liste != Verschieben).
-        ///
-        /// Diese fuenf Bedingungen beschreiben nur die GEOMETRIE des Drops – sie sagen nichts
-        /// darueber, ob Outlook die .msg auch tatsaechlich irgendwo importiert hat. Genau daran
-        /// scheiterte v1.4.2. Das eigentliche Loeschen entscheidet deshalb erst
-        /// <see cref="DragDropHandler.ScheduleVerifiedMove"/> anhand eines Ankunftsnachweises.
-        /// </summary>
-        private void TryCompleteInternalMove(DragDropEffects result, bool ctrlHeld,
-            System.Collections.Generic.IList<DragDropHandler.ItemRef> sourceRefs, DateTime dragStarted)
-        {
-            try
-            {
-                if (!Settings.InternalMoveEnabled) return;   // per Registry abgeschaltet
-                if (ctrlHeld) return;                        // Strg = Kopieren
-                if (result == DragDropEffects.None) return;  // Drop abgebrochen/abgelehnt
-                if (sourceRefs == null || sourceRefs.Count == 0) return;
-
-                IntPtr targetHwnd = GetDropTargetWindow();
-                string cls = GetWindowClass(targetHwnd);
-                GetWindowThreadProcessId(targetHwnd, out uint targetPid);
-                uint ownPid = GetCurrentProcessId();
-
-                IntPtr dropRoot = GetAncestor(targetHwnd, GA_ROOT);
-                IntPtr explorerRoot = GetExplorerRootWindow();
-                bool sameMainWindow = dropRoot != IntPtr.Zero && dropRoot == explorerRoot;
-
-                Logger.Log($"Drop-Ziel: Klasse='{cls}', ZielPID={targetPid}, EigenePID={ownPid}, " +
-                           $"Effekt={result}, DropRoot={dropRoot}, ExplorerRoot={explorerRoot}, Hauptfenster={sameMainWindow}");
-
-                if (targetPid != ownPid) return;             // externes Ziel (z. B. ABAS) -> niemals loeschen
-                if (!sameMainWindow) return;                 // eigenes Fenster (z. B. Verfassen) -> Anhang, nicht verschieben
-                if (IsMessageList(targetHwnd)) return;       // zurueck auf die Nachrichtenliste -> kein Verschieben
-
-                _handler.ScheduleVerifiedMove(sourceRefs, dragStarted);
-            }
-            catch (System.Exception ex)
-            {
-                Logger.LogError("Fehler beim Abschliessen des internen Verschiebens", ex);
-            }
-        }
-
         /// <summary>Wurzelfenster (Top-Level) des Outlook-Explorers, ueber IOleWindow ermittelt.</summary>
         private IntPtr GetExplorerRootWindow()
         {
@@ -777,13 +764,6 @@ namespace AbasOutlookAddin
             return IntPtr.Zero;
         }
 
-        /// <summary>Ermittelt das Fenster unter dem Mauszeiger (Drop-Zielpunkt).</summary>
-        private static IntPtr GetDropTargetWindow()
-        {
-            if (!GetCursorPos(out POINT p))
-                return IntPtr.Zero;
-            return WindowFromPoint(p);
-        }
 
         public void Dispose()
         {

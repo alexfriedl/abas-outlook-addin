@@ -63,7 +63,6 @@
     <Compile Include="DragDropHandler.cs" />
     <Compile Include="ExplorerWrapper.cs" />
     <Compile Include="Logger.cs" />
-    <Compile Include="Settings.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
 
